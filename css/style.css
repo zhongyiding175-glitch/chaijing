@@ -331,3 +331,4 @@ details.lexd[open] summary::before{content:"▾ "}
   padding:4px 10px;background:var(--accent);color:#fff;cursor:pointer;
 }
 .installbar #installClose{background:transparent;color:#8b8375;padding:2px 6px;font-size:14px}
+.buildfoot{text-align:center;font-size:11px;color:#b7ad9c;padding:0 0 18px;letter-spacing:.04em}

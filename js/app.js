@@ -1,32 +1,39 @@
-/* 精读 · 查经 —— 纯前端，零依赖，可离线运行 */
+/* 精读 · 查经 —— 纯前端，零依赖，可离线运行
+ * v2：数据按「章」切片，边下边渲染，空闲预热索引
+ */
 (function () {
   "use strict";
 
-  var BOOKS = window.__BOOKS || [];
+  var DATA_V = "v2";                 // 数据目录版本，改数据时同步改这里
+  var BOOKS = [];
+  var chapCache = {};                // "b:c" -> 章节对象
+  var chapPending = {};              // "b:c" -> {promise, resolve, reject}
+  var aliasMap = null;
 
   var state = {
     view: "ask",
     book: 40, chap: 5, verse: 1,
-    data: null,
-    lex: null, conc: null,
-    search: null,          // {texts:[], refs:[]}
+    lex: null, conc: null, search: null,
     loading: {}
   };
-  var bookCache = {};
-  var aliasMap = null;
+
+  /* 章节文件回调：并发安全 */
+  window.__chp = function (key, data) {
+    chapCache[key] = data;
+    var p = chapPending[key];
+    if (p) { delete chapPending[key]; p.resolve(data); }
+  };
 
   var $ = function (id) { return document.getElementById(id); };
-  var askView = $("askView"), readView = $("readView");
-  var readerEl = $("reader"), panelEl = $("panel");
-  var askResult = $("askResult"), qInput = $("q");
-  var bookSel = $("bookSel"), chapSel = $("chapSel");
+  var askView, readView, readerEl, panelEl, askResult, qInput, bookSel, chapSel;
 
-  /* ---------------- 基础工具 ---------------- */
+  /* ---------------- 基础 ---------------- */
   function esc(s) {
     return String(s == null ? "" : s)
       .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
   }
   function pad2(n) { return n < 10 ? "0" + n : "" + n; }
+  function pad3(n) { return n < 100 ? (n < 10 ? "00" + n : "0" + n) : "" + n; }
   function bookMeta(n) {
     for (var i = 0; i < BOOKS.length; i++) if (BOOKS[i].n === n) return BOOKS[i];
     return null;
@@ -40,25 +47,33 @@
       document.head.appendChild(s);
     });
   }
+  function chapterOf(b, c) { return chapCache[b + ":" + c] || null; }
 
-  /* ---------------- 数据加载 ---------------- */
-  function loadBook(n) {
-    if (bookCache[n]) return Promise.resolve(bookCache[n]);
-    var prev = window.__B;
-    window.__B = null;
-    return loadScript("data/b" + pad2(n) + ".js").then(function () {
-      var d = window.__B; window.__B = prev;
-      if (!d) throw new Error("数据为空");
-      bookCache[n] = d;
-      return d;
-    });
+  function loadChapter(b, c) {
+    var key = b + ":" + c;
+    if (chapCache[key]) return Promise.resolve(chapCache[key]);
+    if (chapPending[key]) return chapPending[key].promise;
+
+    var resolve, reject;
+    var promise = new Promise(function (res, rej) { resolve = res; reject = rej; });
+    chapPending[key] = { promise: promise, resolve: resolve, reject: reject };
+
+    var el = document.createElement("script");
+    el.src = "data/" + DATA_V + "/ch" + pad2(b) + "-" + pad3(c) + ".js";
+    el.onerror = function () {
+      delete chapPending[key];
+      reject(new Error("无法载入 " + key));
+    };
+    document.head.appendChild(el);
+    return promise;
   }
 
+  /* ---------------- 索引加载 ---------------- */
   function ensureLex() {
     if (state.lex) return Promise.resolve(state.lex);
     if (state.loading.lex) return state.loading.lex;
     var prev = window.__LEX; window.__LEX = null;
-    state.loading.lex = loadScript("data/lex.js").then(function () {
+    state.loading.lex = loadScript("data/" + DATA_V + "/lex.js").then(function () {
       state.lex = window.__LEX || {}; window.__LEX = prev; return state.lex;
     });
     return state.loading.lex;
@@ -68,7 +83,7 @@
     if (state.conc) return Promise.resolve(state.conc);
     if (state.loading.conc) return state.loading.conc;
     var prev = window.__CONC; window.__CONC = null;
-    state.loading.conc = loadScript("data/conc.js").then(function () {
+    state.loading.conc = loadScript("data/" + DATA_V + "/conc.js").then(function () {
       state.conc = window.__CONC || {}; window.__CONC = prev; return state.conc;
     });
     return state.loading.conc;
@@ -78,7 +93,7 @@
     if (state.search) return Promise.resolve(state.search);
     if (state.loading.search) return state.loading.search;
     var prev = window.__SEARCH; window.__SEARCH = null;
-    state.loading.search = loadScript("data/search.js").then(function () {
+    state.loading.search = loadScript("data/" + DATA_V + "/search.js").then(function () {
       var raw = window.__SEARCH; window.__SEARCH = prev;
       var digits = "0123456789abcdefghijklmnopqrstuvwxyz";
       var parts = raw.r.split(",");
@@ -88,26 +103,35 @@
         for (var j = 0; j < s.length; j++) n = n * 36 + digits.indexOf(s[j]);
         refs[i] = n;
       }
-      state.search = { texts: raw.t.split("\u0001"), refs: refs };
+      state.search = { texts: raw.t.split("\u0001"), refs: refs, all: null };
       return state.search;
     });
     return state.loading.search;
+  }
+
+  /* 空闲时预热：让第一次点击「查」不再空等 */
+  function warmup() {
+    var c = navigator.connection;
+    if (c && (c.saveData || /(^|-)2g$/.test(c.effectiveType || ""))) return;
+    var idle = window.requestIdleCallback || function (fn) { return setTimeout(fn, 1200); };
+    idle(function () {
+      ensureLex().catch(function () {});
+      ensureConc().catch(function () {});
+    }, { timeout: 3000 });
+    setTimeout(function () { ensureSearch().catch(function () {}); }, 1800);
   }
 
   /* ---------------- 书卷别名 ---------------- */
   function buildAliasMap() {
     var map = {};
     BOOKS.forEach(function (b) {
-      var cands = [b.name, b.abbr];
-      cands.push(b.name.replace(/(福音|书|记|上|下|前书|后书)$/g, ""));
-      cands.push(b.name.replace(/[上下]?书?$/g, ""));
+      var cands = [b.name, b.abbr, b.name.replace(/(福音|书|记|上|下|前书|后书)$/g, ""), b.name.replace(/[上下]?书?$/g, "")];
       if (b.name.length >= 3) cands.push(b.name.slice(0, 2));
       cands.forEach(function (c) {
         c = (c || "").trim();
         if (c.length >= 1 && !(c in map)) map[c] = b.n;
       });
     });
-    // 常见异名
     Object.assign(map, {
       "诗": 19, "诗篇": 19, "箴": 20, "传": 21, "歌": 22, "赛": 23,
       "太": 40, "可": 41, "路": 42, "约": 43, "徒": 44, "罗": 45,
@@ -121,7 +145,6 @@
     alias = (alias || "").replace(/\s/g, "");
     if (!alias) return null;
     if (aliasMap[alias]) return aliasMap[alias];
-    // 最长前缀匹配
     for (var len = Math.min(alias.length, 8); len >= 1; len--) {
       var k = alias.slice(0, len);
       if (aliasMap[k]) return aliasMap[k];
@@ -130,29 +153,31 @@
   }
 
   /* ---------------- 问句解析 ---------------- */
+  function questionIntent(q) {
+    if (/为什么|为何|凭什么|什么原因|缘故|怎么会|岂不/.test(q)) return "why";
+    if (/怎么|怎样|如何|凭什么得/.test(q)) return "how";
+    return "what";
+  }
+
   function parseQuery(raw) {
     var q = (raw || "").trim();
     if (!q) return null;
 
-    // 1) 经文引用：太5:3 / 马太福音5章3节 / 5:3 / 40:5:3
     var m = q.match(/^([\u4e00-\u9fa5A-Za-z]{0,8})\s*(\d{1,3})\s*[:：章]\s*(\d{1,3})/);
     if (m) {
       var bk = m[1] ? resolveBook(m[1]) : null;
-      if (bk) return { type: "ref", book: bk, chap: +m[2], verse: +m[3], term: null };
+      if (bk) return { type: "ref", book: bk, chap: +m[2], verse: +m[3] };
     }
     var m2 = q.match(/^(\d{1,3})\s*[:：]\s*(\d{1,2})\s*:\s*(\d{1,3})/);
-    if (m2) return { type: "ref", book: +m2[1], chap: +m2[2], verse: +m2[3], term: null };
+    if (m2) return { type: "ref", book: +m2[1], chap: +m2[2], verse: +m2[3] };
 
-    // 2) 引号里的词
     var qm = q.match(/[「『“"]([^」』”"]{1,24})[」』”"]/);
     var term = qm ? qm[1] : null;
 
-    // 3) 什么叫 X / 什么是 X
     if (!term) {
       var m3 = q.match(/(?:什么叫|什么是|何为|甚么叫)\s*([^，。？！\s]{1,16})/);
       if (m3) term = m3[1];
     }
-    // 4) X 是什么意思
     if (!term) {
       var m4 = q.match(/^(.{1,24}?)(?:到底是|究竟)?(?:是什么意思|什么意思|是啥意思|啥意思|的意思是什么|的意思|怎么解释|如何理解|的含义是什么|的含义|是指什么)/);
       if (m4) term = m4[1];
@@ -168,9 +193,9 @@
     if (!term) term = q;
 
     term = term.replace(/^(请问|那么|那|我想问|想问|帮忙查一下|查一下)/, "")
-               .replace(/[，。？！?、；：\s]+$/g, "")
-               .trim();
+               .replace(/[，。？！?、；：\s]+$/g, "").trim();
     if (!term) return null;
+
     var isQuestion = /为什么|为何|凭什么|怎么|怎样|如何|原因|缘故|能不能|可不可以|可以吗|是否/.test(q) || term.length > 10;
     if (isQuestion) return { type: "sentence", term: q, intent: questionIntent(q) };
     return { type: "term", term: term };
@@ -178,8 +203,7 @@
 
   /* ---------------- 全文检索 ---------------- */
   function searchTerm(term) {
-    var S = state.search;
-    var hits = [];
+    var S = state.search, hits = [];
     for (var i = 0; i < S.texts.length; i++) {
       if (S.texts[i].indexOf(term) >= 0) {
         var ref = S.refs[i];
@@ -195,7 +219,46 @@
     return hits;
   }
 
-  /* 代表性挑选：按书卷轮流取，避免全挤在同一卷 */
+  var looseCache = {};
+  function looseRe(chunk) {
+    if (looseCache[chunk]) return looseCache[chunk];
+    var re = null;
+    if (chunk.length >= 2 && chunk.length <= 4) {
+      var body = chunk.split("").map(function (ch) {
+        return ch.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      }).join("[了的着他她们约翰]{0,2}");
+      re = new RegExp(body);
+    }
+    looseCache[chunk] = re;
+    return re;
+  }
+
+  function searchLoose(term) {
+    var re = looseRe(term);
+    if (!re) return [];
+    var S = state.search, out = [];
+    for (var i = 0; i < S.texts.length && out.length < 120; i++) {
+      if (S.texts[i].indexOf(term) >= 0) continue;
+      if (re.test(S.texts[i])) {
+        var ref = S.refs[i];
+        out.push({
+          idx: i,
+          b: Math.floor(ref / 1000000),
+          c: Math.floor((ref % 1000000) / 1000),
+          v: ref % 1000,
+          text: S.texts[i]
+        });
+      }
+    }
+    return out;
+  }
+
+  function hasChunk(s, chunk) {
+    if (s.indexOf(chunk) >= 0) return true;
+    var re = looseRe(chunk);
+    return !!(re && re.test(s));
+  }
+
   function pickRepresentatives(hits, cap) {
     if (hits.length <= cap) return hits.slice();
     var byBook = {}, order = [];
@@ -243,35 +306,26 @@
     return keys;
   }
 
-  /* ---------------- 注释摘录 ---------------- */
+  /* ---------------- 注释 ---------------- */
   var NOTE_PRIORITY = ["原文字义", "文意注解", "灵意注解", "话中之光", "注解"];
 
-  function noteSnippet(bookData, chap, verse, term) {
-    if (!bookData) return null;
-    var ch = null;
-    for (var i = 0; i < bookData.ch.length; i++) if (bookData.ch[i].c === chap) ch = bookData.ch[i];
-    if (!ch || !ch.note) return null;
-    var parts = ch.note[String(verse)];
+  function noteSnippet(chapter, verse, term) {
+    if (!chapter || !chapter.note) return null;
+    var parts = chapter.note[String(verse)];
     if (!parts || !parts.length) return null;
 
     var picked = [];
     NOTE_PRIORITY.forEach(function (label) {
       for (var i = 0; i < parts.length; i++) {
-        if (parts[i].l === label && parts[i].t) {
-          picked.push({ l: label, t: parts[i].t });
-          break;
-        }
+        if (parts[i].l === label && parts[i].t) { picked.push({ l: label, t: parts[i].t }); break; }
       }
     });
     if (!picked.length) {
       for (var i = 0; i < parts.length; i++) if (parts[i].t) { picked.push({ l: parts[i].l || "注解", t: parts[i].t }); break; }
     }
-    // 优先展示提到该词的那几段
     if (term) {
       picked.sort(function (a, b) {
-        var ca = a.t.indexOf(term) >= 0 ? 0 : 1;
-        var cb = b.t.indexOf(term) >= 0 ? 0 : 1;
-        return ca - cb;
+        return (a.t.indexOf(term) >= 0 ? 0 : 1) - (b.t.indexOf(term) >= 0 ? 0 : 1);
       });
     }
     return picked.slice(0, 2).map(function (p) {
@@ -285,7 +339,7 @@
     });
   }
 
-  /* ---------------- 高亮 ---------------- */
+  /* ---------------- 渲染工具 ---------------- */
   function highlight(text, term) {
     if (!term) return esc(text);
     var out = "", from = 0, at;
@@ -293,11 +347,32 @@
       out += esc(text.slice(from, at)) + "<mark>" + esc(term) + "</mark>";
       from = at + term.length;
     }
-    out += esc(text.slice(from));
+    return out + esc(text.slice(from));
+  }
+
+  function hlChunks(text, chunks) {
+    var out = esc(text);
+    chunks.forEach(function (c) { out = out.split(esc(c)).join("<mark>" + esc(c) + "</mark>"); });
     return out;
   }
 
-  /* ---------------- 渲染：提问结果 ---------------- */
+  function verseText(b, c, v) {
+    var ch = chapterOf(b, c);
+    if (!ch) return null;
+    for (var j = 0; j < ch.v.length; j++) if (ch.v[j][0] === v) return ch.v[j][1];
+    return null;
+  }
+
+  function hitHTML(h, chunks) {
+    var m = bookMeta(h.b);
+    return '<div class="hit"><div class="hithead"><span class="hitref">' + esc(m ? m.name : "") +
+      " " + h.c + ":" + h.v + "</span>" +
+      '<button type="button" class="openbtn" data-b="' + h.b + '" data-c="' + h.c +
+      '" data-v="' + h.v + '">上下文 ›</button></div>' +
+      '<div class="hittxt">' + hlChunks(h.text, chunks) + "</div></div>";
+  }
+
+  /* ================= 问：查词 ================= */
   function renderLoading(msg) {
     askResult.innerHTML = '<div class="loading">' + esc(msg || "检索中…") + "</div>";
   }
@@ -309,194 +384,141 @@
       '<p class="hint">可能是写法不同（例如「虚心」与「灵里贫穷」），可以换个说法，或直接在「读」里翻到那一节。</p></div>';
   }
 
+  function lexCardsHTML(keys) {
+    var html = "";
+    keys.forEach(function (k) {
+      var e = state.lex[k], c = state.conc[k];
+      if (!e && !c) return;
+      html += '<div class="card lexcard"><h2>原文线索 <span class="src">CBOL · 按具体程度排序</span></h2>';
+      html += '<div class="lexhead"><span class="lexorig">' + esc(e ? e.o : "") + "</span>" +
+        '<span class="lexnum">' + esc(k) + "</span>" +
+        (c ? '<span class="lexcnt">全书 ' + c[0] + " 处</span>" : "") + "</div>";
+      if (c && c[1] && c[1].length) {
+        html += '<div class="trans">在和合本里译作：' + c[1].map(function (p) {
+          return '<button type="button" class="chip" data-q="' + esc(p[0]) + '">' + esc(p[0]) + " " + p[1] + "</button>";
+        }).join("") + "</div>";
+      }
+      if (e) {
+        html += '<details class="lexd"><summary>义项与用法（CBOL）</summary><div class="lexbody">' + esc(e.t) + "</div></details>";
+      }
+      html += "</div>";
+    });
+    return html;
+  }
+
   function renderTermResult(term, hits) {
-    var S = state.search;
     var otCount = 0, ntCount = 0, byBook = {};
     hits.forEach(function (h) {
       if (h.b <= 39) otCount++; else ntCount++;
-      var m = bookMeta(h.b);
-      var k = m ? m.name : String(h.b);
+      var m = bookMeta(h.b), k = m ? m.name : String(h.b);
       byBook[k] = (byBook[k] || 0) + 1;
     });
 
-    var CAP = 12;
-    var reps = pickRepresentatives(hits, CAP);
+    var reps = pickRepresentatives(hits, 12);
     var truncated = hits.length > reps.length;
 
-    var booksNeeded = {};
-    reps.forEach(function (h) { booksNeeded[h.b] = 1; });
+    var html = '<div class="card"><h2>检索结果 <span class="src">和合本全文</span></h2>';
+    html += '<div class="hitsum"><span class="term">' + esc(term) + "</span>" +
+      '<span class="cnt">全书 ' + hits.length + " 处</span>" +
+      '<span class="split">旧约 ' + otCount + " · 新约 " + ntCount + "</span></div>";
+    var bok = Object.keys(byBook).map(function (k) { return [k, byBook[k]]; })
+      .sort(function (a, b) { return b[1] - a[1]; }).slice(0, 8);
+    html += '<div class="dist">' + bok.map(function (x) {
+      return '<span class="tag">' + esc(x[0]) + " " + x[1] + "</span>";
+    }).join("") + "</div>";
+    if (truncated) {
+      html += '<p class="hint">共 ' + hits.length + " 处，下面挑 " + reps.length + " 节作代表（按书卷轮流取样）。</p>";
+    }
+    html += "</div>";
 
-    renderLoading("载入经文与注解…");
+    html += '<div id="lexHost"></div>';
+    html += '<div class="card"><h2>经文 <span class="src">和合本</span></h2><div id="verseHost">' +
+      '<div class="loading">正在载入经文…</div></div></div>';
+    html += '<p class="hint" id="tailHint"></p>';
+    askResult.innerHTML = html;
 
-    Promise.all(Object.keys(booksNeeded).map(function (b) { return loadBook(+b); }))
-      .then(function () { return Promise.all([ensureLex(), ensureConc()]); })
-      .then(function () {
-        // 原文线索
-        var keyStat = {};
-        reps.forEach(function (h) {
-          var bd = bookCache[h.b];
-          if (!bd) return;
-          var ch = null;
-          for (var i = 0; i < bd.ch.length; i++) if (bd.ch[i].c === h.c) ch = bd.ch[i];
-          if (!ch) return;
-          var row = null;
-          for (var j = 0; j < ch.v.length; j++) if (ch.v[j][0] === h.v) row = ch.v[j];
-          if (!row || !row[2]) return;
-          alignTerm(row[2], term).forEach(function (k) {
-            keyStat[k] = (keyStat[k] || 0) + 1;
-          });
-        });
+    var verseHost = $("verseHost"), lexHost = $("lexHost"), tail = $("tailHint");
+    var shown = 0;
+    var keysSeen = {}, keys = [];
 
-        var keys = Object.keys(keyStat).filter(function (k) {
-          return state.lex[k] || state.conc[k];
-        }).sort(function (a, b) {
-          var ca = (state.conc[a] ? state.conc[a][0] : 99999);
-          var cb = (state.conc[b] ? state.conc[b][0] : 99999);
-          return ca - cb;
-        }).slice(0, 2);
+    // 章节按代表顺序去重
+    var chaps = [], seenC = {};
+    reps.forEach(function (r) {
+      var k = r.b + ":" + r.c;
+      if (!seenC[k]) { seenC[k] = 1; chaps.push(r); }
+    });
 
-        var html = "";
-        html += '<div class="card"><h2>检索结果 <span class="src">和合本全文</span></h2>';
-        html += '<div class="hitsum"><span class="term">' + esc(term) + "</span>" +
-          '<span class="cnt">全书 ' + hits.length + " 处</span>" +
-          '<span class="split">旧约 ' + otCount + " · 新约 " + ntCount + "</span></div>";
-        var bok = Object.keys(byBook).map(function (k) { return [k, byBook[k]]; })
-          .sort(function (a, b) { return b[1] - a[1]; }).slice(0, 8);
-        html += '<div class="dist">' + bok.map(function (x) {
-          return '<span class="tag">' + esc(x[0]) + " " + x[1] + "</span>";
-        }).join("") + "</div>";
-        if (truncated) {
-          html += '<p class="hint">共 ' + hits.length + " 处，下面挑出 " + reps.length +
-            " 节作代表（按书卷轮流取样，避免全是同一卷）。</p>";
-        }
-        html += "</div>";
+    // 索引可能已在预热中
+    var lexReady = Promise.all([ensureLex(), ensureConc()]);
+    lexReady.then(function () {
+      if (lexHost) lexHost.innerHTML = lexCardsHTML(keys);
+    }).catch(function () {});
 
-        // 原文线索
-        if (keys.length) {
-          keys.forEach(function (k) {
-            var e = state.lex[k], c = state.conc[k];
-            html += '<div class="card lexcard"><h2>原文线索 <span class="src">CBOL · 按具体程度排序</span></h2>';
-            html += '<div class="lexhead"><span class="lexorig">' + esc(e ? e.o : "") + "</span>" +
-              '<span class="lexnum">' + esc(k) + "</span>" +
-              (c ? '<span class="lexcnt">全书 ' + c[0] + " 处</span>" : "") + "</div>";
-            if (c && c[1] && c[1].length) {
-              html += '<div class="trans">在和合本里译作：' + c[1].map(function (p) {
-                return '<button type="button" class="chip" data-q="' + esc(p[0]) + '">' +
-                  esc(p[0]) + " " + p[1] + "</button>";
-              }).join("") + "</div>";
-            }
-            if (e) {
-              html += '<details class="lexd"><summary>义项与用法（CBOL）</summary>' +
-                '<div class="lexbody">' + esc(e.t) + "</div></details>";
-            }
-            html += "</div>";
-          });
-        }
-
-        // 经文
-        html += '<div class="card"><h2>经文 <span class="src">点条目右侧可进上下文</span></h2>';
-        reps.forEach(function (h) {
-          var bd = bookCache[h.b], m = bookMeta(h.b);
-          var name = m ? m.name : "";
-          var snippet = noteSnippet(bd, h.c, h.v, term);
-          html += '<div class="hit">';
-          html += '<div class="hithead"><span class="hitref">' + esc(name) + " " + h.c + ":" + h.v + "</span>" +
-            '<button type="button" class="openbtn" data-b="' + h.b + '" data-c="' + h.c + '" data-v="' + h.v + '">上下文 ›</button></div>';
-          html += '<div class="hittxt">' + highlight(h.text, term) + "</div>";
-          if (snippet && snippet.length) {
-            snippet.forEach(function (p) {
-              html += '<div class="hitnote"><span class="plabel">' + esc(p.l) + "</span>" +
+    var i = 0;
+    function step() {
+      if (i >= chaps.length) {
+        if (tail) tail.textContent = "";
+        return;
+      }
+      var cx = chaps[i++];
+      loadChapter(cx.b, cx.c).then(function (ch) {
+        var part = "";
+        reps.forEach(function (r) {
+          if (r.b !== cx.b || r.c !== cx.c) return;
+          var snip = noteSnippet(ch, r.v, term);
+          part += '<div class="hit"><div class="hithead"><span class="hitref">' +
+            esc(bookMeta(r.b).name) + " " + r.c + ":" + r.v + "</span>" +
+            '<button type="button" class="openbtn" data-b="' + r.b + '" data-c="' + r.c +
+            '" data-v="' + r.v + '">上下文 ›</button></div>' +
+            '<div class="hittxt">' + highlight(r.text, term) + "</div>";
+          if (snip && snip.length) {
+            snip.forEach(function (p) {
+              part += '<div class="hitnote"><span class="plabel">' + esc(p.l) + "</span>" +
                 '<span class="ptext">' + esc(p.t) + "</span></div>";
             });
           } else {
-            html += '<div class="hitnote muted">（这一节在基督徒文摘里没有逐节注解）</div>';
+            part += '<div class="hitnote muted">（这一节在基督徒文摘里没有逐节注解）</div>';
           }
-          html += "</div>";
+          part += "</div>";
+          shown++;
         });
-        html += "</div>";
-        html += '<p class="hint">以上全部取自本机数据；找不到的就不显示，不做推测。</p>';
+        if (shown === 0) verseHost.innerHTML = "";
+        if (verseHost.querySelector(".loading")) verseHost.innerHTML = "";
+        verseHost.insertAdjacentHTML("beforeend", part);
 
-        askResult.innerHTML = html;
-        bindResultEvents();
-      })
-      .catch(function (err) {
-        askResult.innerHTML = '<div class="card"><h2>出错了</h2><p class="none">' + esc(err.message) + "</p></div>";
-      });
+        // 原文线索：从已载入的章节里抽取
+        reps.forEach(function (r) {
+          if (r.b !== cx.b || r.c !== cx.c) return;
+          var ch2 = chapterOf(r.b, r.c);
+          if (!ch2) return;
+          for (var j = 0; j < ch2.v.length; j++) {
+            if (ch2.v[j][0] !== r.v) continue;
+            alignTerm(ch2.v[j][2], term).forEach(function (k) {
+              if (!keysSeen[k]) { keysSeen[k] = 1; keys.push(k); }
+            });
+          }
+        });
+        keys.sort(function (a, b) {
+          var ca = state.conc && state.conc[a] ? state.conc[a][0] : 99999;
+          var cb = state.conc && state.conc[b] ? state.conc[b][0] : 99999;
+          return ca - cb;
+        });
+        if (state.lex || state.conc) lexHost.innerHTML = lexCardsHTML(keys.slice(0, 2));
+
+        if (tail) tail.textContent = i < chaps.length ? "已载入 " + i + "/" + chaps.length + " 处…" : "";
+        step();
+      }).catch(function () { step(); });
+    }
+    step();
   }
 
-  function bindResultEvents() {
-    Array.prototype.forEach.call(askResult.querySelectorAll(".chip[data-q]"), function (btn) {
-      btn.addEventListener("click", function () {
-        qInput.value = btn.getAttribute("data-q");
-        runQuery(qInput.value);
-      });
-    });
-    Array.prototype.forEach.call(askResult.querySelectorAll(".openbtn"), function (btn) {
-      btn.addEventListener("click", function () {
-        var b = +btn.getAttribute("data-b"), c = +btn.getAttribute("data-c"), v = +btn.getAttribute("data-v");
-        setView("read");
-        goTo(b, c, v);
-      });
-    });
-  }
-
-  /* ---------------- 句子级提问 ---------------- */
-
-  function questionIntent(q) {
-    if (/为什么|为何|凭什么|什么原因|缘故|怎么会|岂不/.test(q)) return "why";
-    if (/怎么|怎样|如何|凭什么得/.test(q)) return "how";
-    if (/什么是|何谓|什么叫|是什么|指什么|的定义|的含义/.test(q)) return "what";
-    return "what";
-  }
-
+  /* ================= 问：句子 ================= */
   var CUE = {
     why: ["因为", "为要", "目的", "所以", "缘故", "原因", "因着", "因此", "是为", "叫他", "免得"],
     how: ["如何", "怎样", "方法", "藉着", "借着", "应当", "就当", "要"],
     what: ["就是", "是指", "意思是", "即", "称为", "所谓", "指的是", "乃是", "意即"]
   };
-
   var LABEL_BONUS = { "文意注解": 4, "原文字义": 3, "灵意注解": 3, "话中之光": 0, "注解": 1 };
-
-  /* 允许中间插 0~2 个虚词，解决「受洗 / 受了他的洗」这类写法差异 */
-  var looseCache = {};
-  function looseRe(chunk) {
-    if (looseCache[chunk]) return looseCache[chunk];
-    var re = null;
-    if (chunk.length >= 2 && chunk.length <= 4) {
-      var body = chunk.split("").map(function (ch) {
-        return ch.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-      }).join("[了的着他她们约翰]{0,2}");
-      re = new RegExp(body);
-    }
-    looseCache[chunk] = re;
-    return re;
-  }
-
-  function searchLoose(term) {
-    var re = looseRe(term);
-    if (!re) return [];
-    var S = state.search, out = [];
-    for (var i = 0; i < S.texts.length && out.length < 120; i++) {
-      if (S.texts[i].indexOf(term) >= 0) continue;
-      if (re.test(S.texts[i])) {
-        var ref = S.refs[i];
-        out.push({
-          idx: i,
-          b: Math.floor(ref / 1000000),
-          c: Math.floor((ref % 1000000) / 1000),
-          v: ref % 1000,
-          text: S.texts[i]
-        });
-      }
-    }
-    return out;
-  }
-
-  function hasChunk(s, chunk) {
-    if (s.indexOf(chunk) >= 0) return true;
-    var re = looseRe(chunk);
-    return !!(re && re.test(s));
-  }
 
   function splitSentences(text) {
     if (!text) return [];
@@ -504,7 +526,7 @@
     for (var i = 0; i < text.length; i++) {
       var ch = text.charAt(i);
       buf += ch;
-      if ("。！？；".indexOf(ch) >= 0 || (ch === "\n")) {
+      if ("。！？；".indexOf(ch) >= 0 || ch === "\n") {
         var s = buf.trim();
         if (s.length >= 8 && s.length <= 260) out.push(s);
         buf = "";
@@ -520,8 +542,7 @@
     var stops = [
       "为什么说", "为什么", "为何", "凭什么", "什么原因", "缘故", "究竟", "到底", "请问", "那么",
       "什么是", "什么叫", "是什么", "何谓", "怎么", "怎样", "如何", "能不能", "可以吗",
-      "圣经", "里面", "之中", "记载", "提到",
-      "吗", "呢", "吧", "啊", "的", "了", "着", "么"
+      "圣经", "里面", "之中", "记载", "提到", "吗", "呢", "吧", "啊", "的", "了", "着", "么"
     ];
     stops.forEach(function (w) { s = s.split(w).join(" "); });
     s = s.replace(/[，。？！?、；："'“”‘’「」『』()（）《》…]/g, " ");
@@ -537,10 +558,8 @@
     if (!state.search.all) state.search.all = state.search.texts.join("\u0001");
     return state.search.all;
   }
-
   function existsSub(s) { return haystack().indexOf(s) >= 0; }
 
-  /* 把 "耶稣受洗" 切成 ["耶稣","受洗"]：每步取最长的、在经文里出现过的片段 */
   function segmentChunk(chunk) {
     if (existsSub(chunk)) return [chunk];
     var out = [], i = 0;
@@ -577,7 +596,6 @@
         scored[k].score += weight;
         if (scored[k].matched.indexOf(c) < 0) scored[k].matched.push(c);
       });
-      // 写法有差异时（受洗 / 受了洗），再补一轮宽松匹配
       if (hits.length < 3) {
         searchLoose(c).forEach(function (h) {
           var k = h.idx;
@@ -587,82 +605,119 @@
         });
       }
     });
-    return order.map(function (k) { return scored[k]; })
-      .sort(function (a, b) { return b.score - a.score; });
+    return order.map(function (k) { return scored[k]; }).sort(function (a, b) { return b.score - a.score; });
   }
 
   function renderAnswer(question, chunks, intent, ranked) {
-    var topVerses = ranked.slice(0, 3).map(function (x) { return x.h; });
-    var chapKey = {}, chapters = [];
+    var chunkHits = chunks.map(function (c) { return searchTerm(c).length; });
+    var primaryIdx = 0;
+    for (var pi = 1; pi < chunkHits.length; pi++) if (chunkHits[pi] < chunkHits[primaryIdx]) primaryIdx = pi;
+    var weights = chunks.map(function (c, i) { return 1 / Math.log(2 + chunkHits[i]); });
+    var cues = CUE[intent] || [];
+
+    var chapters = [], seenC = {};
     ranked.slice(0, 8).forEach(function (x) {
       var k = x.h.b + ":" + x.h.c;
-      if (!chapKey[k]) { chapKey[k] = 1; chapters.push({ b: x.h.b, c: x.h.c }); }
+      if (!seenC[k]) { seenC[k] = 1; chapters.push(x.h); }
     });
     chapters = chapters.slice(0, 5);
 
-    renderLoading("在这几章的资料里找答案…");
+    var html = '<div class="card"><h2>问题 <span class="src">在全书资料里找现成的解释</span></h2>';
+    html += '<div class="qline">' + esc(question) + "</div>";
+    html += '<div class="qmeta">关键词：<b>' + chunks.map(esc).join("</b> · <b>") + "</b>" +
+      '<span class="sep">|</span>意图：' + ({ why: "问原因", how: "问做法", what: "问含义" }[intent] || "问含义") +
+      "</div></div>";
+    html += '<div id="vHost"></div><div id="qHost"></div>';
+    html += '<p class="hint" id="tailHint">正在资料里找…</p>';
+    askResult.innerHTML = html;
 
-    Promise.all(chapters.map(function (x) { return loadBook(x.b); }))
-      .then(function () {
-        var units = [];
+    var vHost = $("vHost"), qHost = $("qHost"), tail = $("tailHint");
+    var pool = [], seenText = {}, loaded = 0;
 
-        // 逐节注解
-        chapters.forEach(function (cx) {
-          var bd = bookCache[cx.b];
-          if (!bd) return;
-          var ch = null;
-          for (var i = 0; i < bd.ch.length; i++) if (bd.ch[i].c === cx.c) ch = bd.ch[i];
-          if (!ch) return;
-          if (ch.note) {
-            Object.keys(ch.note).forEach(function (v) {
-              ch.note[v].forEach(function (part) {
-                if (!part.t || !part.l) return;
-                units.push({
-                  src: "基督徒文摘解经系列", b: cx.b, c: cx.c, v: +v,
-                  label: part.l || "注解", text: part.t
-                });
-              });
-            });
+    function rerender() {
+      // 经文：用已找到的注解回填排序
+      var chapQ = {}, verseQ = {};
+      pool.slice(0, 5).forEach(function (p) {
+        var ck = p.u.b + ":" + p.u.c;
+        chapQ[ck] = (chapQ[ck] || 0) + 1;
+        if (p.u.v) verseQ[ck + ":" + p.u.v] = (verseQ[ck + ":" + p.u.v] || 0) + 1;
+      });
+      var rescored = ranked.slice(0, 40).map(function (x) {
+        var h = x.h, ck = h.b + ":" + h.c, vk = ck + ":" + h.v, s = x.score;
+        s += 1.5 * (chapQ[ck] || 0);
+        s += 3 * (verseQ[vk] || 0);
+        if (p.chapters && p.chapters[ck]) {
+          var ch = chapterOf(h.b, h.c);
+          if (ch && ch.note && ch.note[String(h.v)]) {
+            var note = ch.note[String(h.v)];
+            for (var j = 0; j < note.length; j++) {
+              if (note[j].t && hasChunk(note[j].t, chunks[primaryIdx])) { s += 2; break; }
+            }
           }
-          if (ch.chap) {
-            ch.chap.forEach(function (item) {
-              units.push({
-                src: item.s, b: cx.b, c: cx.c, v: 0,
-                label: "整章", text: (item.p || []).join("\n")
-              });
-            });
-          }
+        }
+        return { h: h, s: s };
+      }).sort(function (a, b) { return b.s - a.s; });
+
+      var top = rescored.slice(0, 3).map(function (x) { return x.h; });
+      vHost.innerHTML = '<div class="card"><h2>关键词所在经文 <span class="src">和合本</span></h2>' +
+        top.map(function (h) { return hitHTML(h, chunks); }).join("") + "</div>";
+
+      if (pool.length) {
+        var top5 = pool.slice(0, 5);
+        var anyCue = top5.some(function (x) { return x.cue; });
+        var body = '<div class="card"><h2>资料原文 <span class="src">逐条摘录，未改写</span></h2>';
+        top5.forEach(function (p) {
+          var loc = p.u.v ? (esc(bookMeta(p.u.b).name) + " " + p.u.c + ":" + p.u.v)
+                          : (esc(bookMeta(p.u.b).name) + " 第 " + p.u.c + " 章");
+          body += '<div class="quote"><div class="qhead">' + esc(p.u.src) + " · " + loc +
+            ' · <span class="qlabel">' + esc(p.u.label) + "</span></div>" +
+            '<div class="qbody">' + hlChunks(p.s, chunks) + "</div></div>";
         });
+        if (!anyCue && intent === "why") {
+          body += '<p class="hint">资料里没有出现「因为／所以／为要」这类因果句，下面列的是与问题相关的论述，请自行判断。</p>';
+        }
+        qHost.innerHTML = body + "</div>";
+      }
+    }
 
-        var cues = CUE[intent] || [];
-        var chunkHits = chunks.map(function (c) { return searchTerm(c).length; });
-        var primaryIdx = 0;
-        for (var pi = 1; pi < chunkHits.length; pi++) if (chunkHits[pi] < chunkHits[primaryIdx]) primaryIdx = pi;
-        var weights = chunks.map(function (c, i) { return 1 / Math.log(2 + chunkHits[i]); });
-        var picked = [];
+    var i = 0;
+    function step() {
+      if (i >= chapters.length) return finish();
+      var cx = chapters[i++];
+      loadChapter(cx.b, cx.c).then(function (ch) {
+        loaded++;
+        p_chapters(cx);
+        var units = [];
+        if (ch.note) {
+          Object.keys(ch.note).forEach(function (v) {
+            ch.note[v].forEach(function (part) {
+              if (!part.t || !part.l) return;
+              units.push({ src: "基督徒文摘解经系列", b: cx.b, c: cx.c, v: +v, label: part.l || "注解", text: part.t });
+            });
+          });
+        }
+        if (ch.chap) {
+          ch.chap.forEach(function (item) {
+            units.push({ src: item.s, b: cx.b, c: cx.c, v: 0, label: "整章", text: (item.p || []).join("\n") });
+          });
+        }
         units.forEach(function (u) {
           splitSentences(u.text).forEach(function (s) {
-            var hitCount = 0, matched = [], wsum = 0;
+            var matched = [], wsum = 0;
             chunks.forEach(function (c, ci) {
-              if (hasChunk(s, c)) { hitCount++; matched.push(c); wsum += weights[ci]; }
+              if (hasChunk(s, c)) { matched.push(c); wsum += weights[ci]; }
             });
-            if (!hitCount) return;
-            // 必须命中"最稀有的那个关键词"，否则容易跑题
+            if (!matched.length) return;
             if (chunks.length > 1 && matched.indexOf(chunks[primaryIdx]) < 0) return;
-
-            // 去掉关键词后还剩多少内容：太少的多半只是把经文重复一遍
             var rest = s;
             matched.forEach(function (c) { rest = rest.split(c).join(""); });
             var substance = rest.replace(/[\s「」『』“”"（）()【】〔〕：，。！？；、·…—]/g, "").length;
             if (substance < 10) return;
-
             var cueHit = 0;
             cues.forEach(function (cw) { if (s.indexOf(cw) >= 0) cueHit = 1; });
             var score = wsum * 6 + cueHit * 3 + (LABEL_BONUS[u.label] || 0);
             if (substance >= 40) score += 2;
             if (substance >= 80) score += 1;
-
-            // 这条注解所解的经文，本身是否同时出现问句的关键词
             if (u.v) {
               var vt = verseText(u.b, u.c, u.v);
               if (vt) {
@@ -671,132 +726,51 @@
                 score += cov * 1.5;
               }
             }
-            picked.push({ u: u, s: s, score: score, matched: matched, cue: cueHit, substance: substance });
+            var key = s.replace(/\s/g, "").slice(0, 40);
+            if (seenText[key]) return;
+            seenText[key] = 1;
+            pool.push({ u: u, s: s, score: score, cue: cueHit, substance: substance });
           });
         });
-
-        picked.sort(function (a, b) {
+        pool.sort(function (a, b) {
           if (b.score !== a.score) return b.score - a.score;
           return b.substance - a.substance;
         });
-
-        // 去重（同一条句子可能出现在多个模块里）
-        var seenText = {}, final = [];
-        picked.forEach(function (p) {
-          var key = p.s.replace(/\s/g, "").slice(0, 40);
-          if (seenText[key]) return;
-          seenText[key] = 1;
-          final.push(p);
-        });
-        final = final.slice(0, 5);
-        var anyCue = final.some(function (p) { return p.cue; });
-
-        // ---- 用「注释本身被哪几节命中」来重排经文 ----
-        var chapQ = {}, verseQ = {};
-        final.forEach(function (p) {
-          var ck = p.u.b + ":" + p.u.c;
-          chapQ[ck] = (chapQ[ck] || 0) + 1;
-          if (p.u.v) {
-            var vk = ck + ":" + p.u.v;
-            verseQ[vk] = (verseQ[vk] || 0) + 1;
-          }
-        });
-
-        var primaryChunk = chunks[primaryIdx] || chunks[0];
-        var rescored = ranked.slice(0, 40).map(function (x) {
-          var h = x.h, ck = h.b + ":" + h.c, vk = ck + ":" + h.v;
-          var s = x.score;
-          s += 1.5 * (chapQ[ck] || 0);
-          s += 3 * (verseQ[vk] || 0);
-          // 该节自己的注解里提到关键词，再加一点
-          var bd = bookCache[h.b];
-          if (bd) {
-            for (var i = 0; i < bd.ch.length; i++) {
-              if (bd.ch[i].c !== h.c) continue;
-              var note = bd.ch[i].note && bd.ch[i].note[String(h.v)];
-              if (note) {
-                for (var j = 0; j < note.length; j++) {
-                  if (note[j].t && hasChunk(note[j].t, primaryChunk)) { s += 2; break; }
-                }
-              }
-              break;
-            }
-          }
-          return { h: h, s: s };
-        }).sort(function (a, b) { return b.s - a.s; });
-
-        var displayVerses = rescored.slice(0, 3).map(function (x) { return x.h; });
-
-        var html = "";
-
-        html += '<div class="card"><h2>问题 <span class="src">在全书资料里找现成的解释</span></h2>';
-        html += '<div class="qline">' + esc(question) + "</div>";
-        html += '<div class="qmeta">' +
-          "关键词：<b>" + chunks.map(esc).join("</b> · <b>") + "</b>" +
-          '<span class="sep">|</span>意图：' +
-          ({ why: "问原因", how: "问做法", what: "问含义" }[intent] || "问含义") +
-          '<span class="sep">|</span>相关经节：' +
-          displayVerses.map(function (h) {
-            return esc(bookMeta(h.b).name) + " " + h.c + ":" + h.v;
-          }).join("、") +
-          "</div></div>";
-
-        // 经文
-        html += '<div class="card"><h2>关键词所在经文 <span class="src">和合本</span></h2>';
-        displayVerses.forEach(function (h) {
-          html += '<div class="hit"><div class="hithead"><span class="hitref">' +
-            esc(bookMeta(h.b).name) + " " + h.c + ":" + h.v + "</span>" +
-            '<button type="button" class="openbtn" data-b="' + h.b + '" data-c="' + h.c +
-            '" data-v="' + h.v + '">上下文 ›</button></div>' +
-            '<div class="hittxt">' + hlChunks(h.text, chunks) + "</div></div>";
-        });
-        html += "</div>";
-
-        // 摘录
-        if (final.length) {
-          html += '<div class="card"><h2>资料原文 <span class="src">逐条摘录，未改写</span></h2>';
-          final.forEach(function (p) {
-            var loc = p.u.v ? (esc(bookMeta(p.u.b).name) + " " + p.u.c + ":" + p.u.v)
-                            : (esc(bookMeta(p.u.b).name) + " 第 " + p.u.c + " 章");
-            html += '<div class="quote"><div class="qhead">' + esc(p.u.src) + " · " + loc +
-              ' · <span class="qlabel">' + esc(p.u.label) + "</span></div>" +
-              '<div class="qbody">' + hlChunks(p.s, chunks) + "</div></div>";
-          });
-          if (!anyCue && intent === "why") {
-            html += '<p class="hint">资料里没有出现「因为／所以／为要」这类因果句，下面列的是与问题相关的论述，请自行判断。</p>';
-          }
-          html += "</div>";
-        } else {
-          html += '<div class="card"><h2>没有找到直接的解释</h2>' +
-            '<p class="none">这些资料里没有直接讲到「' + esc(question) + "」的段落。</p>" +
-            '<p class="hint">可以换个说法，或者点上面的「上下文」自己读这一章的注解。</p></div>';
-        }
-
-        html += '<p class="hint">以上每一句都摘自本机数据，出处已标注；没有找到的部分不补写、不推测。</p>';
-        askResult.innerHTML = html;
-        bindResultEvents();
-      })
-      .catch(function (err) {
-        askResult.innerHTML = '<div class="card"><h2>出错了</h2><p class="none">' + esc(err.message) + "</p></div>";
-      });
-  }
-
-  function verseText(b, c, v) {
-    var bd = bookCache[b];
-    if (!bd) return null;
-    for (var i = 0; i < bd.ch.length; i++) {
-      if (bd.ch[i].c !== c) continue;
-      for (var j = 0; j < bd.ch[i].v.length; j++) if (bd.ch[i].v[j][0] === v) return bd.ch[i].v[j][1];
-      return null;
+        rerender();
+        if (tail) tail.textContent = i < chapters.length ? "已找到 " + Math.min(pool.length, 5) + " 条，继续看别的章节…" : "";
+        step();
+      }).catch(function () { step(); });
     }
-    return null;
+
+    var _chapters = {};
+    function p_chapters(cx) { _chapters[cx.b + ":" + cx.c] = 1; }
+
+    function finish() {
+      if (tail) tail.textContent = pool.length ? "" : "";
+      if (!pool.length) {
+        qHost.innerHTML = '<div class="card"><h2>没有找到直接的解释</h2>' +
+          '<p class="none">这些资料里没有直接讲到「' + esc(question) + "」的段落。</p>" +
+          '<p class="hint">可以换个说法，或者点上面的「上下文」自己读这一章的注解。</p></div>';
+      }
+    }
+
+    // 让 rerender 能拿到已载入的章节标记
+    var p = { chapters: _chapters };
+
+    step();
   }
 
-  function hlChunks(text, chunks) {    var out = esc(text);
-    chunks.forEach(function (c) {
-      out = out.split(esc(c)).join("<mark>" + esc(c) + "</mark>");
+  /* ---------------- 结果交互 ---------------- */
+  function initResultDelegation() {
+    askResult.addEventListener("click", function (e) {
+      var chip = e.target.closest(".chip[data-q]");
+      if (chip) { qInput.value = chip.getAttribute("data-q"); runQuery(qInput.value); return; }
+      var open = e.target.closest(".openbtn");
+      if (open) {
+        setView("read");
+        goTo(+open.getAttribute("data-b"), +open.getAttribute("data-c"), +open.getAttribute("data-v"));
+      }
     });
-    return out;
   }
 
   /* ---------------- 查询入口 ---------------- */
@@ -829,12 +803,10 @@
       var hits = searchTerm(term);
       if (!hits.length) { renderNoHit(term); return; }
       renderTermResult(term, hits);
-    }).catch(function () {
-      renderLoading("索引载入失败");
-    });
+    }).catch(function () { renderLoading("索引载入失败"); });
   }
 
-  /* ---------------- 视图切换 ---------------- */
+  /* ---------------- 视图 ---------------- */
   function setView(v) {
     state.view = v;
     $("tabAsk").classList.toggle("on", v === "ask");
@@ -865,22 +837,8 @@
     }
   }
 
-  function currentChapter() {
-    var d = state.data; if (!d) return null;
-    for (var i = 0; i < d.ch.length; i++) if (d.ch[i].c === state.chap) return d.ch[i];
-    return null;
-  }
-  function currentVerseRow(ch) {
-    for (var i = 0; i < ch.v.length; i++) if (ch.v[i][0] === state.verse) return ch.v[i];
-    return null;
-  }
-
-  function renderChapter() {
-    var d = state.data; if (!d) return;
+  function renderChapter(ch) {
     var meta = bookMeta(state.book);
-    var ch = currentChapter();
-    if (!ch) { readerEl.innerHTML = '<div class="loading">本章没有数据</div>'; return; }
-
     var html = '<h1 class="chaptitle">' + esc(meta.name) + " 第 " + state.chap + " 章</h1>";
     if (ch.overview && ch.overview.length) {
       html += '<details class="overview"><summary>本章纲要（基督徒文摘）</summary><div class="body">';
@@ -891,10 +849,11 @@
       html += '<p class="verse" data-v="' + row[0] + '"><span class="num">' + row[0] + "</span>" + esc(row[1]) + "</p>";
     });
     readerEl.innerHTML = html;
+
     Array.prototype.forEach.call(readerEl.querySelectorAll(".verse"), function (el) {
       el.addEventListener("click", function () {
         state.verse = parseInt(el.getAttribute("data-v"), 10);
-        markActive(); renderPanel(); syncHash();
+        markActive(); renderPanel(ch); syncHash();
         if (window.matchMedia("(max-width: 899px)").matches) {
           panelEl.scrollIntoView({ behavior: "smooth", block: "start" });
         }
@@ -943,8 +902,7 @@
   }
 
   function lexCard(keys) {
-    var lex = state.lex || {};
-    var html = "";
+    var lex = state.lex || {}, html = "";
     for (var i = 0; i < keys.length; i++) {
       var k = keys[i], e = lex[k];
       if (!e) continue;
@@ -955,8 +913,7 @@
         '<span class="lexprev">' + esc(preview) + "</span></summary>" +
         '<div class="lexbody">' + esc(e.t) + "</div></details>";
     }
-    if (!html) html = '<div class="none">词条库中未找到对应条目</div>';
-    return html;
+    return html || '<div class="none">词条库中未找到对应条目</div>';
   }
 
   function noteCard(ch) {
@@ -981,8 +938,7 @@
     if (!ch.chap || !ch.chap.length) return "";
     var html = '<div class="card"><h2>整章资料 <span class="src">按章收录，非逐节</span></h2>';
     ch.chap.forEach(function (src, i) {
-      html += '<details class="block"' + (i === 0 ? " open" : "") + "><summary>" + esc(src.s) +
-        "</summary><div class='body'>";
+      html += '<details class="block"' + (i === 0 ? " open" : "") + "><summary>" + esc(src.s) + "</summary><div class='body'>";
       src.p.forEach(function (p) { html += "<p>" + esc(p) + "</p>"; });
       html += "</div></details>";
     });
@@ -997,19 +953,19 @@
     return html + "</div></div>";
   }
 
-  function renderPanel() {
-    var ch = currentChapter(); if (!ch) return;
-    var row = currentVerseRow(ch); if (!row) return;
+  function renderPanel(ch) {
+    var row = null;
+    for (var i = 0; i < ch.v.length; i++) if (ch.v[i][0] === state.verse) row = ch.v[i];
+    if (!row) return;
+
     var meta = bookMeta(state.book);
     var ref = meta.name + " " + state.chap + ":" + state.verse;
     var raw = row[2] || "";
     var keys = collectKeys(raw);
 
     var html = '<p class="ref">' + esc(ref) + "</p>";
-    html += '<div class="card"><h2>经文 <span class="src">和合本</span></h2>' +
-      '<div class="scripture">' + esc(row[1]) + "</div></div>";
+    html += '<div class="card"><h2>经文 <span class="src">和合本</span></h2><div class="scripture">' + esc(row[1]) + "</div></div>";
     html += noteCard(ch);
-
     if (raw) {
       html += '<div class="card"><h2>原文逐词 <span class="src">信望爱和合本 · Strong 编码</span></h2>' +
         '<div class="strongline">' + renderStrongLine(raw) + "</div>" +
@@ -1026,8 +982,7 @@
     Array.prototype.forEach.call(panelEl.querySelectorAll(".sn"), function (a) {
       a.addEventListener("click", function (e) {
         e.preventDefault();
-        var k = a.getAttribute("data-k");
-        var t = document.getElementById("lex-" + k);
+        var t = document.getElementById("lex-" + a.getAttribute("data-k"));
         if (t) {
           t.open = true;
           t.scrollIntoView({ behavior: "smooth", block: "center" });
@@ -1069,9 +1024,17 @@
     chapSel.value = String(chap);
     readerEl.innerHTML = '<div class="loading">载入中…</div>';
     panelEl.innerHTML = "";
-    loadBook(book).then(function (d) {
-      state.data = d;
-      renderChapter(); renderPanel(); syncHash();
+
+    var wanted = book + ":" + chap;
+    loadChapter(book, chap).then(function (ch) {
+      if (state.book + ":" + state.chap !== wanted) return;   // 已经翻到别处
+      renderChapter(ch);
+      renderPanel(ch);
+      syncHash();
+      // 预取下一章
+      setTimeout(function () {
+        if (chap < meta.c && state.book + ":" + state.chap === wanted) loadChapter(book, chap + 1).catch(function () {});
+      }, 800);
     }).catch(function (err) {
       readerEl.innerHTML = '<div class="loading">载入失败：' + esc(err.message) + "</div>";
     });
@@ -1079,18 +1042,14 @@
 
   /* ---------------- PWA ---------------- */
   function setupPWA() {
-    // 注册 Service Worker（file:// 下不可用，跳过）
     if ("serviceWorker" in navigator && location.protocol.indexOf("http") === 0) {
       window.addEventListener("load", function () {
         navigator.serviceWorker.register("sw.js").catch(function () {});
       });
     }
-
     var bar = $("installBar"), text = $("installText"), go = $("installGo");
     if (!bar) return;
-
-    var standalone = window.matchMedia("(display-mode: standalone)").matches ||
-                     window.navigator.standalone === true;
+    var standalone = window.matchMedia("(display-mode: standalone)").matches || window.navigator.standalone === true;
     if (standalone) { bar.hidden = true; return; }
     if (localStorage.getItem("jd_install_dismissed") === "1") return;
 
@@ -1123,28 +1082,28 @@
 
   /* ---------------- 初始化 ---------------- */
   function init() {
+    askView = $("askView"); readView = $("readView");
+    readerEl = $("reader"); panelEl = $("panel");
+    askResult = $("askResult"); qInput = $("q");
+    bookSel = $("bookSel"); chapSel = $("chapSel");
+
     setupPWA();
+    initResultDelegation();
     buildBookSelect();
     setView("ask");
 
     $("tabAsk").addEventListener("click", function () { setView("ask"); });
     $("tabRead").addEventListener("click", function () {
       setView("read");
-      if (!state.data) {
+      if (!readerEl.querySelector(".verse")) {
         var h = parseHash() || { b: 40, c: 5, v: 1 };
         goTo(h.b, h.c, h.v);
       }
     });
 
-    $("askForm").addEventListener("submit", function (e) {
-      e.preventDefault();
-      runQuery(qInput.value);
-    });
+    $("askForm").addEventListener("submit", function (e) { e.preventDefault(); runQuery(qInput.value); });
     Array.prototype.forEach.call(document.querySelectorAll("#examples button"), function (b) {
-      b.addEventListener("click", function () {
-        qInput.value = b.getAttribute("data-q");
-        runQuery(qInput.value);
-      });
+      b.addEventListener("click", function () { qInput.value = b.getAttribute("data-q"); runQuery(qInput.value); });
     });
 
     bookSel.addEventListener("change", function () { goTo(parseInt(bookSel.value, 10), 1, 1); });
@@ -1162,7 +1121,7 @@
       var h = parseHash(); if (!h) return;
       setView("read");
       if (h.b !== state.book || h.c !== state.chap) goTo(h.b, h.c, h.v);
-      else if (h.v !== state.verse) { state.verse = h.v; markActive(); renderPanel(); }
+      else if (h.v !== state.verse) { state.verse = h.v; markActive(); var ch = chapterOf(state.book, state.chap); if (ch) renderPanel(ch); }
     });
 
     var qh = (location.hash || "").replace(/^#/, "");
@@ -1175,8 +1134,21 @@
       setView("read");
       goTo(h.b, h.c, h.v);
     }
+
+    // 首屏空闲时预热索引，让第一次搜索不再空等
+    setTimeout(warmup, 800);
   }
 
-  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", init);
-  else init();
+  function boot() {
+    loadScript("data/" + DATA_V + "/books.js").then(function () {
+      BOOKS = window.__BOOKS || [];
+      init();
+    }).catch(function () {
+      document.body.insertAdjacentHTML("afterbegin",
+        '<div style="padding:20px;color:#a33">数据载入失败，请检查 data/' + DATA_V + "/ 是否存在</div>");
+    });
+  }
+
+  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", boot);
+  else boot();
 })();
