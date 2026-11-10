@@ -98,7 +98,7 @@
     try { px = parseInt(localStorage.getItem(FS_KEY) || "17", 10) || 17; } catch (e) {}
     applyFont(px);
   }
-  var askView, readView, favView, readerEl, panelEl, askResult, qInput, bookSel, chapSel;
+  var askView, readView, favView, noteView, readerEl, panelEl, askResult, qInput, locBtn;
 
   /* ---------------- 基础 ---------------- */
   function esc(s) {
@@ -1091,37 +1091,152 @@
     $("tabAsk").classList.toggle("on", v === "ask");
     $("tabRead").classList.toggle("on", v === "read");
     $("tabFav").classList.toggle("on", v === "fav");
+    $("tabNote").classList.toggle("on", v === "note");
     askView.hidden = v !== "ask";
     readView.hidden = v !== "read";
     favView.hidden = v !== "fav";
-    $("readControls").hidden = v !== "read";
+    noteView.hidden = v !== "note";
+    if (locBtn) locBtn.hidden = v !== "read";
     if (v === "fav") renderFavList();
+    if (v === "note") renderNoteList();
   }
 
   /* ================= 读 ================= */
-  function buildBookSelect() {
-    var ot = document.createElement("optgroup"); ot.label = "旧约";
-    var nt = document.createElement("optgroup"); nt.label = "新约";
-    BOOKS.forEach(function (b) {
-      var o = document.createElement("option");
-      o.value = b.n; o.textContent = b.name;
-      (b.n <= 39 ? ot : nt).appendChild(o);
-    });
-    bookSel.appendChild(ot); bookSel.appendChild(nt);
+
+  /* 最近读过的书卷 */
+  function pushRecent(b) {
+    var list = [];
+    try { list = JSON.parse(localStorage.getItem("jd_recent") || "[]") || []; } catch (e) {}
+    list = list.filter(function (x) { return x !== b; });
+    list.unshift(b);
+    if (list.length > 5) list = list.slice(0, 5);
+    try { localStorage.setItem("jd_recent", JSON.stringify(list)); } catch (e) {}
+  }
+  function getRecent() {
+    try { return JSON.parse(localStorage.getItem("jd_recent") || "[]") || []; } catch (e) { return []; }
   }
 
-  function buildChapSelect(max) {
-    chapSel.innerHTML = "";
-    for (var i = 1; i <= max; i++) {
-      var o = document.createElement("option");
-      o.value = i; o.textContent = "第 " + i + " 章";
-      chapSel.appendChild(o);
+  var sheetTab = "book";
+  function openSheet(tab) {
+    sheetTab = tab || "book";
+    $("locSheet").hidden = false;
+    Array.prototype.forEach.call(document.querySelectorAll(".stab"), function (b) {
+      b.classList.toggle("on", b.getAttribute("data-tab") === sheetTab);
+    });
+    renderSheet();
+  }
+  function closeSheet() { $("locSheet").hidden = true; }
+
+  function renderSheet() {
+    var body = $("sheetBody"), foot = $("sheetFoot");
+    if (!body) return;
+    if (sheetTab === "book") {
+      var html = "";
+      var recent = getRecent();
+      if (recent.length) {
+        html += '<div class="sect">最近记录</div><div class="grid">';
+        recent.forEach(function (b) {
+          var m = bookMeta(b); if (!m) return;
+          html += '<button type="button" class="bcell" data-b="' + b + '">' +
+            '<span class="bshort">' + esc(m.abbr) + '</span><span class="bfull">' + esc(m.name) + "</span></button>";
+        });
+        html += "</div>";
+      }
+      [["旧约", 1, 39], ["新约", 40, 66]].forEach(function (sec) {
+        html += '<div class="sect">' + sec[0] + "</div><div class=\"grid\">";
+        BOOKS.forEach(function (b) {
+          if (b.n < sec[1] || b.n > sec[2]) return;
+          var on = b.n === state.book ? " on" : "";
+          html += '<button type="button" class="bcell' + on + '" data-b="' + b.n + '">' +
+            '<span class="bshort">' + esc(b.abbr) + '</span><span class="bfull">' + esc(b.name) + "</span></button>";
+        });
+        html += "</div>";
+      });
+      body.innerHTML = html;
+      foot.textContent = "";
+    } else {
+      var meta = bookMeta(state.book);
+      var html = '<div class="chapgrid">';
+      for (var i = 1; i <= meta.c; i++) {
+        html += '<button type="button" class="ccell' + (i === state.chap ? " on" : "") +
+          '" data-c="' + i + '">' + i + "</button>";
+      }
+      html += "</div>";
+      body.innerHTML = html;
+      foot.textContent = meta.name + " " + state.chap + ":" + state.verse;
+    }
+  }
+
+  function bindSheetEvents() {
+    $("locBtn").addEventListener("click", function () { openSheet("book"); });
+    $("locClose").addEventListener("click", closeSheet);
+    $("locSheet").addEventListener("click", function (e) {
+      if (e.target === $("locSheet")) closeSheet();
+    });
+    Array.prototype.forEach.call(document.querySelectorAll(".stab"), function (b) {
+      b.addEventListener("click", function () { openSheet(b.getAttribute("data-tab")); });
+    });
+    $("sheetBody").addEventListener("click", function (e) {
+      var bc = e.target.closest(".bcell");
+      if (bc) {
+        var b = +bc.getAttribute("data-b");
+        var restore = state.book === b ? state.chap : 1;
+        goTo(b, restore, 1);
+        openSheet("chap");
+        return;
+      }
+      var cc = e.target.closest(".ccell");
+      if (cc) {
+        var c = +cc.getAttribute("data-c");
+        closeSheet();
+        goTo(state.book, c, 1);
+      }
+    });
+  }
+
+  /* 左右滑动切章 */
+  function bindSwipe(el) {
+    var x0 = 0, y0 = 0, t0 = 0, armed = false, moved = false;
+    el.addEventListener("touchstart", function (e) {
+      if (e.touches.length !== 1) { armed = false; return; }
+      var t = e.touches[0];
+      x0 = t.clientX; y0 = t.clientY; t0 = Date.now(); armed = true; moved = false;
+    }, { passive: true });
+    el.addEventListener("touchmove", function (e) {
+      if (!armed) return;
+      var t = e.touches[0];
+      if (Math.abs(t.clientX - x0) > 12 && Math.abs(t.clientX - x0) > Math.abs(t.clientY - y0)) moved = true;
+    }, { passive: true });
+    el.addEventListener("touchend", function (e) {
+      if (!armed) return;
+      armed = false;
+      if (Date.now() - t0 > 900) return;
+      var t = e.changedTouches[0];
+      var dx = t.clientX - x0, dy = t.clientY - y0;
+      if (Math.abs(dx) < 64) return;
+      if (Math.abs(dx) < Math.abs(dy) * 1.6) return;
+      if (e.target.closest("button, a, textarea, input, details, summary")) return;
+      if (dx < 0) nextChapter(); else prevChapter();
+    }, { passive: true });
+  }
+
+  function nextChapter() {
+    var meta = bookMeta(state.book);
+    if (state.chap < meta.c) return goTo(state.book, state.chap + 1, 1);
+    if (state.book < 66) goTo(state.book + 1, 1, 1);
+  }
+  function prevChapter() {
+    if (state.chap > 1) return goTo(state.book, state.chap - 1, 1);
+    if (state.book > 1) {
+      var pm = bookMeta(state.book - 1);
+      goTo(state.book - 1, pm.c, 1);
     }
   }
 
   function renderChapter(ch) {
     var meta = bookMeta(state.book);
     var favMap = verseFavMap(state.book, state.chap);
+    var nMap = noteMap(state.book, state.chap);
     var html = '<h1 class="chaptitle">' + esc(meta.name) + " 第 " + state.chap + " 章" +
       '<button type="button" class="introlink" data-b="' + state.book + '">本卷提要</button></h1>';
     if (ch.overview && ch.overview.length) {
@@ -1132,7 +1247,8 @@
     ch.v.forEach(function (row) {
       html += '<p class="verse' + (favMap[row[0]] ? " starred" : "") + '" data-v="' + row[0] + '">' +
         '<span class="num">' + row[0] + "</span>" + esc(row[1]) +
-        (favMap[row[0]] ? '<span class="star">★</span>' : "") + "</p>";
+        (favMap[row[0]] ? '<span class="star">★</span>' : "") +
+        (nMap[row[0]] ? '<span class="nmark">✎</span>' : "") + "</p>";
     });
     readerEl.innerHTML = html;
 
@@ -1301,10 +1417,13 @@
     var html = '<p class="ref">' + esc(ref) + "</p>";
     var fv = { type: "verse", b: state.book, c: state.chap, v: state.verse, label: "", text: row[1], ref: ref };
     var on = isFav(fv);
+    var hasNote = !!findNote({ b: state.book, c: state.chap, v: state.verse });
     html += '<div class="card"><h2>经文 <span class="src">和合本</span></h2>' +
       '<div class="scripture">' + esc(row[1]) + "</div>" +
       '<div class="acts"><button type="button" class="favbtn' + (on ? " on" : "") +
-      '" data-kind="verse">' + (on ? "★ 已收藏" : "☆ 收藏这句") + "</button></div></div>";
+      '" data-kind="verse">' + (on ? "★ 已收藏" : "☆ 收藏这句") + "</button>" +
+      '<button type="button" class="notebtn' + (hasNote ? " on" : "") + '">' +
+      (hasNote ? "✎ 有笔记" : "✎ 记笔记") + "</button></div></div>";
     html += noteCard(ch);
     if (raw) {
       html += '<div class="card"><h2>原文逐词 <span class="src">信望爱和合本 · Strong 编码</span></h2>' +
@@ -1374,9 +1493,8 @@
     if (chap < 1) chap = 1;
     if (chap > meta.c) chap = meta.c;
     state.book = book; state.chap = chap; state.verse = verse || 1;
-    bookSel.value = String(book);
-    buildChapSelect(meta.c);
-    chapSel.value = String(chap);
+    pushRecent(book);
+    if (locBtn) locBtn.textContent = meta.name + " " + chap;
     readerEl.innerHTML = '<div class="loading">载入中…</div>';
     panelEl.innerHTML = "";
 
@@ -1398,6 +1516,111 @@
       }, 800);
     }).catch(function (err) {
       readerEl.innerHTML = '<div class="loading">载入失败：' + esc(err.message) + "</div>";
+    });
+  }
+
+  /* ---------------- 笔记 ---------------- */
+  var NOTE_KEY = "jd_notes";
+  var notes = [];
+  var editing = null;
+
+  function loadNotes() {
+    try { notes = JSON.parse(localStorage.getItem(NOTE_KEY) || "[]") || []; } catch (e) { notes = []; }
+    return notes;
+  }
+  function saveNotes() {
+    try { localStorage.setItem(NOTE_KEY, JSON.stringify(notes)); } catch (e) {}
+    var t = $("tabNote");
+    if (t) t.textContent = notes.length ? "记 " + notes.length : "记";
+  }
+  function findNote(o) {
+    for (var i = 0; i < notes.length; i++) {
+      if (notes[i].b === o.b && notes[i].c === o.c && notes[i].v === o.v) return notes[i];
+    }
+    return null;
+  }
+  function noteMap(b, c) {
+    var m = {};
+    notes.forEach(function (n) { if (n.b === b && n.c === c) m[n.v] = 1; });
+    return m;
+  }
+  function openNoteEditor() {
+    var ch = chapterOf(state.book, state.chap);
+    if (!ch) return;
+    var row = null;
+    for (var i = 0; i < ch.v.length; i++) if (ch.v[i][0] === state.verse) row = ch.v[i];
+    if (!row) return;
+    editing = { b: state.book, c: state.chap, v: state.verse };
+    $("noteHead").textContent = bookMeta(state.book).name + " " + state.chap + ":" + state.verse + "　" + row[1].slice(0, 24);
+    var exist = findNote(editing);
+    $("noteText").value = exist ? exist.text : "";
+    $("noteMask").hidden = false;
+    setTimeout(function () { $("noteText").focus(); }, 60);
+  }
+  function closeNoteEditor() {
+    $("noteMask").hidden = true;
+    editing = null;
+  }
+  function saveNoteFromEditor() {
+    if (!editing) return;
+    var text = ($("noteText").value || "").trim();
+    var ch = chapterOf(editing.b, editing.c);
+    var verseText = "";
+    if (ch) for (var i = 0; i < ch.v.length; i++) if (ch.v[i][0] === editing.v) verseText = ch.v[i][1];
+    var exist = findNote(editing);
+    if (!text) {
+      if (exist) notes.splice(notes.indexOf(exist), 1);
+    } else if (exist) {
+      exist.text = text;
+      exist.ts = Date.now();
+    } else {
+      notes.unshift({ b: editing.b, c: editing.c, v: editing.v, text: text,
+                      verse: verseText, ts: Date.now() });
+    }
+    saveNotes();
+    var o = editing;
+    closeNoteEditor();
+    var cur = chapterOf(o.b, o.c);
+    if (cur && o.b === state.book && o.c === state.chap) renderPanel(cur);
+    if (state.view === "note") renderNoteList();
+  }
+
+  function renderNoteList() {
+    var host = $("noteList"), cnt = $("noteCount");
+    if (cnt) cnt.textContent = notes.length + " 条";
+    if (!host) return;
+    if (!notes.length) {
+      host.innerHTML = '<div class="none">还没有笔记。<br>读经时点「✎ 记笔记」，写下你的领受。</div>';
+      return;
+    }
+    var html = "";
+    notes.forEach(function (n, i) {
+      var m = bookMeta(n.b);
+      var ref = (m ? m.name : "") + " " + n.c + ":" + n.v;
+      html += '<div class="noteitem"><div class="fhead"><span class="fref">' + esc(ref) + "</span>" +
+        '<span class="fbtns"><button type="button" class="notego" data-b="' + n.b + '" data-c="' + n.c +
+        '" data-v="' + n.v + '">跳转</button>' +
+        '<button type="button" class="notedel" data-i="' + i + '">删除</button></span></div>' +
+        (n.verse ? '<div class="nversetext">' + esc(n.verse) + "</div>" : "") +
+        '<div class="ntext">' + esc(n.text).replace(/\n/g, "<br>") + "</div></div>";
+    });
+    host.innerHTML = html;
+  }
+
+  function bindNotes() {
+    $("noteCancel").addEventListener("click", closeNoteEditor);
+    $("noteSave").addEventListener("click", saveNoteFromEditor);
+    $("noteMask").addEventListener("click", function (e) {
+      if (e.target === $("noteMask")) closeNoteEditor();
+    });
+    $("noteList").addEventListener("click", function (e) {
+      var go = e.target.closest(".notego");
+      if (go) { setView("read"); goTo(+go.getAttribute("data-b"), +go.getAttribute("data-c"), +go.getAttribute("data-v")); return; }
+      var del = e.target.closest(".notedel");
+      if (del) {
+        notes.splice(+del.getAttribute("data-i"), 1);
+        saveNotes(); renderNoteList();
+      }
     });
   }
 
@@ -1443,17 +1666,18 @@
 
   /* ---------------- 初始化 ---------------- */
   function init() {
-    askView = $("askView"); readView = $("readView"); favView = $("favView");
+    askView = $("askView"); readView = $("readView"); favView = $("favView"); noteView = $("noteView");
     readerEl = $("reader"); panelEl = $("panel");
     askResult = $("askResult"); qInput = $("q");
-    bookSel = $("bookSel"); chapSel = $("chapSel");
+    locBtn = $("locBtn");
 
     setupPWA();
     initResultDelegation();
     loadFavs(); saveFavs();
+    loadNotes(); saveNotes();
     initFont();
     renderHist();
-    buildBookSelect();
+
     setView("ask");
 
     $("tabAsk").addEventListener("click", function () { setView("ask"); });
@@ -1481,6 +1705,7 @@
 
     // 收藏按钮（只注册一次）
     panelEl.addEventListener("click", function (e) {
+      if (e.target.closest(".notebtn")) { openNoteEditor(); return; }
       var b = e.target.closest(".favbtn");
       if (!b) return;
       var kind = b.getAttribute("data-kind");
@@ -1527,17 +1752,11 @@
       b.addEventListener("click", function () { qInput.value = b.getAttribute("data-q"); runQuery(qInput.value); });
     });
 
-    bookSel.addEventListener("change", function () { goTo(parseInt(bookSel.value, 10), 1, 1); });
-    chapSel.addEventListener("change", function () { goTo(state.book, parseInt(chapSel.value, 10), 1); });
-    $("prevBtn").addEventListener("click", function () {
-      if (state.chap > 1) return goTo(state.book, state.chap - 1, 1);
-      if (state.book > 1) goTo(state.book - 1, bookMeta(state.book - 1).c, 1);
-    });
-    $("nextBtn").addEventListener("click", function () {
-      var meta = bookMeta(state.book);
-      if (state.chap < meta.c) return goTo(state.book, state.chap + 1, 1);
-      if (state.book < 66) goTo(state.book + 1, 1, 1);
-    });
+    bindSheetEvents();
+    bindSwipe(readerEl);
+    bindNotes();
+    $("tabNote").addEventListener("click", function () { setView("note"); });
+
     window.addEventListener("hashchange", function () {
       var h = parseHash(); if (!h) return;
       setView("read");

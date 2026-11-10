@@ -25,15 +25,9 @@
     <button type="button" id="tabAsk" class="tab on">问</button>
     <button type="button" id="tabRead" class="tab">读</button>
     <button type="button" id="tabFav" class="tab">藏</button>
+    <button type="button" id="tabNote" class="tab">记</button>
   </nav>
-  <div class="controls" id="readControls" hidden>
-    <select id="bookSel" aria-label="书卷"></select>
-    <select id="chapSel" aria-label="章"></select>
-    <div class="navbtns">
-      <button id="prevBtn" type="button" aria-label="上一章">‹</button>
-      <button id="nextBtn" type="button" aria-label="下一章">›</button>
-    </div>
-  </div>
+  <button type="button" id="locBtn" class="locbtn" hidden>马太福音 5</button>
   <button type="button" id="fontBtn" class="iconbtn" aria-label="字号">Aa</button>
 </header>
 
@@ -95,7 +89,35 @@
     </div>
   </section>
 
+  <section class="noteview" id="noteView" hidden>
+    <div class="card">
+      <h2>我的笔记 <span class="src" id="noteCount"></span></h2>
+      <div id="noteList"></div>
+    </div>
+  </section>
+
 </main>
+
+<div class="sheet" id="locSheet" hidden>
+  <div class="sheetbar">
+    <button type="button" class="stab on" data-tab="book">书卷</button>
+    <button type="button" class="stab" data-tab="chap">章</button>
+    <button type="button" class="sclose" id="locClose" aria-label="关闭">✕</button>
+  </div>
+  <div class="sheetbody" id="sheetBody"></div>
+  <div class="sheetfoot" id="sheetFoot"></div>
+</div>
+
+<div class="notemask" id="noteMask" hidden>
+  <div class="notebox">
+    <div class="notehead" id="noteHead"></div>
+    <textarea id="noteText" placeholder="写下你的领受、疑问或祷告…" rows="6"></textarea>
+    <div class="notebtns">
+      <button type="button" id="noteCancel" class="ghost">取消</button>
+      <button type="button" id="noteSave" class="primary">保存</button>
+    </div>
+  </div>
+</div>
 
 <script src="js/app.js"></script>
 </body>
