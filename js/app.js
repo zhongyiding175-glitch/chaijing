@@ -10,7 +10,8 @@
   var chapPending = {};              // "b:c" -> {promise, resolve, reject}
   var aliasMap = null;
 
-  var FAV_KEY = "jd_fav", FS_KEY = "jd_fs";
+  var FAV_KEY = "jd_fav", FS_KEY = "jd_fs", HIST_KEY = "jd_hist";
+  var HIST_MAX = 8;
   var favs = [];
   var state = {
     view: "ask",
@@ -56,6 +57,31 @@
     var m = {};
     favs.forEach(function (f) { if (f.type === "verse" && f.b === b && f.c === c) m[f.v] = 1; });
     return m;
+  }
+
+  /* ---------------- 搜索历史 ---------------- */
+  function loadHist() {
+    try { return JSON.parse(localStorage.getItem(HIST_KEY) || "[]") || []; } catch (e) { return []; }
+  }
+  function pushHist(q) {
+    q = String(q || "").trim();
+    if (!q) return;
+    var list = loadHist().filter(function (x) { return x !== q; });
+    list.unshift(q);
+    if (list.length > HIST_MAX) list = list.slice(0, HIST_MAX);
+    try { localStorage.setItem(HIST_KEY, JSON.stringify(list)); } catch (e) {}
+    renderHist();
+  }
+  function renderHist() {
+    var list = loadHist();
+    var hint = $("histHint"), box = $("histList");
+    if (!hint || !box) return;
+    if (!list.length) { hint.hidden = true; box.hidden = true; return; }
+    hint.hidden = false;
+    box.hidden = false;
+    box.innerHTML = list.map(function (q) {
+      return '<button type="button" class="histchip" data-hq="' + esc(q) + '">' + esc(q) + "</button>";
+    }).join("");
   }
 
   /* ---------------- 字号 ---------------- */
@@ -999,6 +1025,8 @@
     var parsed = parseQuery(raw);
     if (!parsed) return;
 
+    pushHist(raw);
+
     if (parsed.type === "ref") {
       setView("read");
       goTo(parsed.book, parsed.chap, parsed.verse);
@@ -1118,6 +1146,19 @@
       });
     });
     markActive();
+  }
+
+  function focusVerse(v) {
+    var el = readerEl.querySelector('.verse[data-v="' + v + '"]');
+    if (!el) return;
+    var bar = document.querySelector(".topbar");
+    var off = (bar ? bar.offsetHeight : 0) + 12;
+    var r = el.getBoundingClientRect();
+    if (r.top >= off && r.bottom <= window.innerHeight - 80) return;   // 已经看得见，不动
+    el.style.scrollMarginTop = (off + 10) + "px";
+    el.scrollIntoView({ block: "start", inline: "nearest" });
+    el.classList.add("flash");
+    setTimeout(function () { el.classList.remove("flash"); }, 1800);
   }
 
   function markActive() {
@@ -1325,7 +1366,11 @@
       renderPanel(ch);
       syncHash();
       saveLast();
-      if (scrollY) setTimeout(function () { window.scrollTo(0, scrollY); }, 80);
+      if (scrollY) {
+        setTimeout(function () { window.scrollTo(0, scrollY); }, 80);
+      } else {
+        setTimeout(function () { focusVerse(state.verse); }, 70);
+      }
       // 预取下一章
       setTimeout(function () {
         if (chap < meta.c && state.book + ":" + state.chap === wanted) loadChapter(book, chap + 1).catch(function () {});
@@ -1386,6 +1431,7 @@
     initResultDelegation();
     loadFavs(); saveFavs();
     initFont();
+    renderHist();
     buildBookSelect();
     setView("ask");
 
@@ -1449,6 +1495,13 @@
     });
 
     $("askForm").addEventListener("submit", function (e) { e.preventDefault(); runQuery(qInput.value); });
+    $("histList").addEventListener("click", function (e) {
+      var b = e.target.closest(".histchip");
+      if (!b) return;
+      qInput.value = b.getAttribute("data-hq");
+      runQuery(qInput.value);
+    });
+
     Array.prototype.forEach.call(document.querySelectorAll("#examples button"), function (b) {
       b.addEventListener("click", function () { qInput.value = b.getAttribute("data-q"); runQuery(qInput.value); });
     });
@@ -1480,7 +1533,7 @@
     } else if (parseHash()) {
       var h = parseHash();
       setView("read");
-      goTo(h.b, h.c, h.v, last ? last.y : 0);
+      goTo(h.b, h.c, h.v, 0);
     } else if (last) {
       // 回到上次的位置
       if (last.view === "read" && last.b && last.c) {
