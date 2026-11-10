@@ -193,12 +193,15 @@ details.lexitem[open] .lexprev{display:none}
   border-left:2px solid var(--tag);
 }
 
-.part{margin:0 0 14px}
+.part{margin:0 0 16px}
+.part + .part{padding-top:14px;border-top:1px dashed var(--line)}
+.plabelrow{margin-bottom:2px}
 .part:last-child{margin-bottom:0}
 .plabel{
-  display:inline-block;font-size:11.5px;letter-spacing:.06em;
-  background:var(--tag);color:var(--accent);
-  padding:1px 7px;border-radius:5px;margin-right:6px;
+  display:inline-block;font-size:12.5px;font-weight:700;letter-spacing:.08em;
+  color:#6b4318;background:#ecdec2;
+  border-left:3px solid var(--accent);
+  padding:3px 10px 3px 8px;border-radius:4px;margin-right:6px;
   vertical-align:2px;
 }
 .ptext{font-size:15px;line-height:1.9;color:var(--ink-2);margin-top:4px}
