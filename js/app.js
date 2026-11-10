@@ -445,16 +445,6 @@
       '<p class="hint">可能是写法不同（例如「虚心」与「灵里贫穷」），可以换个说法，或直接在「读」里翻到那一节。</p></div>';
   }
 
-  function renderFuzzy(term, feats, hits) {
-    var html = '<div class="card"><h2>没有完全匹配</h2>' +
-      '<p class="none">全书没有「' + esc(term) + '」这个字符串。</p>' +
-      '<p class="hint">下面这些经文含「' + feats.map(esc).join("」「") + '」，可能是你要找的：</p></div>';
-    html += '<div class="card"><h2>相关经文 <span class="src">和合本</span></h2>';
-    hits.forEach(function (h) { html += hitHTML(h, feats); });
-    html += "</div>";
-    askResult.innerHTML = html;
-  }
-
   function ensureIntros() {
     if (state.intros) return Promise.resolve(state.intros);
     if (state.loading.intros) return state.loading.intros;
@@ -484,6 +474,133 @@
     }).catch(function () {
       askResult.innerHTML = '<div class="card"><h2>载入失败</h2><p class="none">卷提要文件没加载到</p></div>';
     });
+  }
+
+  /* ---------------- 模糊检索 ---------------- */
+  function cleanQuery(q) {
+    return String(q || "").replace(/[\s，。！？、；：""''「」『』（）()【】…—·,.\-?!"']/g, "");
+  }
+
+  function fuzzyFeats(q) {
+    var feats = [];
+    var seen = {};
+    for (var n = 3; n >= 2; n--) {
+      for (var i = 0; i + n <= q.length; i++) {
+        var t = q.substr(i, n);
+        if (seen[t]) continue;
+        seen[t] = 1;
+        feats.push({ t: t, w: n === 3 ? 3 : 2 });
+      }
+    }
+    return feats;
+  }
+
+  function fuzzyFind(rawQuery, limit) {
+    var q = cleanQuery(rawQuery);
+    if (q.length < 2) return { q: q, list: [], total: 0 };
+    if (q.length > 28) q = q.slice(0, 28);
+
+    var feats = fuzzyFeats(q);
+    var totalW = 0;
+    feats.forEach(function (f) { totalW += f.w; });
+    if (!totalW) return { q: q, list: [], total: 0 };
+
+    var S = state.search, out = [];
+    var minLen = Math.max(4, Math.floor(q.length * 0.5));
+    var maxLen = q.length * 5 + 40;
+
+    for (var i = 0; i < S.texts.length; i++) {
+      var t = S.texts[i];
+      if (t.length < minLen || t.length > maxLen) continue;
+      var got = 0, hit = [];
+      for (var j = 0; j < feats.length; j++) {
+        if (t.indexOf(feats[j].t) >= 0) { got += feats[j].w; hit.push(feats[j].t); }
+      }
+      if (!hit.length) continue;
+      var score = got / totalW;
+      if (score < 0.4) continue;
+      out.push({ i: i, score: score, hit: hit });
+    }
+
+    out.sort(function (a, b) {
+      if (b.score !== a.score) return b.score - a.score;
+      return S.texts[a.i].length - S.texts[b.i].length;
+    });
+
+    // 同一章最多取 2 节，避免整页都是马太五章
+    var picked = [], perChap = {};
+    for (var k = 0; k < out.length && picked.length < limit; k++) {
+      var rf = S.refs[out[k].i];
+      var ck = Math.floor(rf / 1000000) + ":" + Math.floor((rf % 1000000) / 1000);
+      perChap[ck] = (perChap[ck] || 0) + 1;
+      if (perChap[ck] > 2) continue;
+      picked.push(out[k]);
+    }
+
+    var list = picked.map(function (x) {
+      var ref = S.refs[x.i];
+      return {
+        idx: x.i,
+        b: Math.floor(ref / 1000000),
+        c: Math.floor((ref % 1000000) / 1000),
+        v: ref % 1000,
+        text: S.texts[x.i],
+        score: x.score,
+        hit: x.hit
+      };
+    });
+    return { q: q, list: list, total: out.length };
+  }
+
+  /* 把命中的片段在经文里标出来（合并重叠） */
+  function markHits(text, feats) {
+    var marks = [];
+    for (var i = 0; i < text.length; i++) marks.push(false);
+    feats.forEach(function (f) {
+      var from = 0, at;
+      while ((at = text.indexOf(f, from)) >= 0) {
+        for (var k = 0; k < f.length; k++) marks[at + k] = true;
+        from = at + 1;
+      }
+    });
+    var html = "", buf = "", on = false;
+    for (var p = 0; p < text.length; p++) {
+      if (marks[p] !== on) {
+        html += on ? "<mark>" + esc(buf) + "</mark>" : esc(buf);
+        buf = ""; on = marks[p];
+      }
+      buf += text.charAt(p);
+    }
+    html += on ? "<mark>" + esc(buf) + "</mark>" : esc(buf);
+    return html;
+  }
+
+  function renderFuzzyList(term, res) {
+    var q = res.q, list = res.list;
+    if (!list.length) {
+      askResult.innerHTML = '<div class="card"><h2>没有找到</h2>' +
+        '<p class="none">全书没有「' + esc(term) + '」，也没找到字面相近的经文。</p>' +
+        '<p class="hint">可以只打记得的几个字，比如「虚心 天国」。</p></div>';
+      return;
+    }
+    var html = '<div class="card"><h2>没有完全匹配 <span class="src">按字面接近程度排序</span></h2>' +
+      '<p class="none">全书没有「' + esc(term) + '」。</p>' +
+      '<p class="hint">下面是字面最接近的 ' + list.length + ' 节（共 ' + res.total +
+      ' 节相似度 ≥ 40%），高亮的是对上的部分。</p></div>';
+
+    html += '<div class="card"><h2>相近经文 <span class="src">和合本</span></h2>';
+    list.forEach(function (h) {
+      var m = bookMeta(h.b);
+      var pct = Math.round(h.score * 100);
+      html += '<div class="hit"><div class="hithead"><span class="hitref">' +
+        esc(m ? m.name : "") + " " + h.c + ":" + h.v + "</span>" +
+        '<span class="fuzzybar"><span class="pct">' + pct + "%</span>" +
+        '<button type="button" class="openbtn" data-b="' + h.b + '" data-c="' + h.c +
+        '" data-v="' + h.v + '">上下文 ›</button></span></div>' +
+        '<div class="hittxt">' + markHits(h.text, h.hit) + "</div></div>";
+    });
+    html += "</div>";
+    askResult.innerHTML = html;
   }
 
   function lexCardsHTML(keys) {
@@ -899,9 +1016,9 @@
       renderLoading("拆解问题…");
       ensureSearch().then(function () {
         var chunks = buildChunks(q);
-        if (!chunks.length) { renderNoHit(q); return; }
+        if (!chunks.length) { renderFuzzyList(q, fuzzyFind(q, 10)); return; }
         var ranked = scoreVerses(chunks);
-        if (!ranked.length) { renderNoHit(chunks[0]); return; }
+        if (!ranked.length) { renderFuzzyList(q, fuzzyFind(q, 10)); return; }
         renderAnswer(q, chunks, parsed.intent, ranked);
       }).catch(function () { renderLoading("索引载入失败"); });
       return;
@@ -913,22 +1030,9 @@
       var hits = searchTerm(term);
       if (hits.length) { renderTermResult(term, hits); return; }
 
-      // 没有完全匹配：拆成更短的片段再找，别直接报「查不到」
-      var feats = [], seenF = {};
-      buildChunks(term).forEach(function (c) {
-        if (!seenF[c] && searchTerm(c).length) { seenF[c] = 1; feats.push(c); }
-      });
-      if (feats.length) {
-        var alt = [], seenH = {};
-        feats.slice(0, 2).forEach(function (c) {
-          searchTerm(c).slice(0, 12).forEach(function (h) {
-            if (!seenH[h.idx]) { seenH[h.idx] = 1; alt.push(h); }
-          });
-        });
-        renderFuzzy(term, feats, alt);
-        return;
-      }
-      renderNoHit(term);
+      // 没有完全匹配：走模糊检索，按字面接近程度排序
+      var res = fuzzyFind(term, 10);
+      renderFuzzyList(term, res);
     }).catch(function () { renderLoading("索引载入失败"); });
   }
 
