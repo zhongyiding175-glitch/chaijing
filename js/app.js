@@ -1148,15 +1148,36 @@
     markActive();
   }
 
+  /* 把某一节滚到屏幕正中间 */
+  function centerVerse(el) {
+    var r = el.getBoundingClientRect();
+    var vh = window.innerHeight || document.documentElement.clientHeight;
+    var delta = (r.top + r.height / 2) - vh / 2;
+    if (Math.abs(delta) > 2) window.scrollBy(0, delta);
+  }
+
   function focusVerse(v) {
     var el = readerEl.querySelector('.verse[data-v="' + v + '"]');
     if (!el) return;
-    var bar = document.querySelector(".topbar");
-    var off = (bar ? bar.offsetHeight : 0) + 12;
-    var r = el.getBoundingClientRect();
-    if (r.top >= off && r.bottom <= window.innerHeight - 80) return;   // 已经看得见，不动
-    el.style.scrollMarginTop = (off + 10) + "px";
-    el.scrollIntoView({ block: "start", inline: "nearest" });
+    var settled = false;
+    function go() { centerVerse(el); }
+    // 等两帧让布局稳定，再等字体就绪
+    requestAnimationFrame(function () {
+      requestAnimationFrame(function () {
+        go();
+        settled = true;
+        if (document.fonts && document.fonts.ready) {
+          document.fonts.ready.then(function () { setTimeout(go, 30); }).catch(function () {});
+        }
+      });
+    });
+    // 保险：有些浏览器字体/安装条会晚一点把页面顶动
+    setTimeout(go, 220);
+    setTimeout(function () {
+      var r = el.getBoundingClientRect();
+      var vh = window.innerHeight || document.documentElement.clientHeight;
+      if (Math.abs((r.top + r.height / 2) - vh / 2) > 40) go();
+    }, 520);
     el.classList.add("flash");
     setTimeout(function () { el.classList.remove("flash"); }, 1800);
   }

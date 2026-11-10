@@ -332,9 +332,11 @@ details.lexd[open] summary::before{content:"▾ "}
 /* ---------- 安装提示条 ---------- */
 .installbar[hidden]{display:none}
 .installbar{
+  position:fixed;left:12px;right:12px;bottom:14px;z-index:55;
   display:flex;align-items:center;gap:10px;
-  max-width:820px;margin:12px auto 0;padding:9px 12px;
-  background:#efe3c9;border:1px solid #e0cfa9;border-radius:10px;
+  margin:0;padding:10px 12px;
+  background:#efe3c9;border:1px solid #e0cfa9;border-radius:12px;
+  box-shadow:0 8px 24px rgba(76,58,32,.18);
   font-size:13px;color:#6b5636;line-height:1.6;
 }
 .installbar span{flex:1;min-width:0}
