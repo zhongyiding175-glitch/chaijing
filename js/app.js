@@ -179,7 +179,7 @@
       if (m3) term = m3[1];
     }
     if (!term) {
-      var m4 = q.match(/^(.{1,24}?)(?:到底是|究竟)?(?:是什么意思|什么意思|是啥意思|啥意思|的意思是什么|的意思|怎么解释|如何理解|的含义是什么|的含义|是指什么)/);
+      var m4 = q.match(/^(.{1,24}?)(?:到底|究竟)?(?:有什么样的?特殊含义|有什么特殊含义|有什么深层含义|有什么含义|有什么意义|有啥含义|有啥意思|的特殊含义|的深层含义|的含义是什么|的含义|的意思是什么|的意思|是什么意思|什么意思|是啥意思|啥意思|指什么|指的是什么|代表什么|意味着什么|说明了什么|怎么解释|如何理解|怎么理解|有何讲究)/);
       if (m4) term = m4[1];
     }
     if (!term) {
@@ -193,7 +193,8 @@
     if (!term) term = q;
 
     term = term.replace(/^(请问|那么|那|我想问|想问|帮忙查一下|查一下)/, "")
-               .replace(/[，。？！?、；：\s]+$/g, "").trim();
+               .replace(/[，。？！?、；：\s]+$/g, "")
+               .replace(/[呢呀啊吧吗]$/, "").trim();
     if (!term) return null;
 
     var isQuestion = /为什么|为何|凭什么|怎么|怎样|如何|原因|缘故|能不能|可不可以|可以吗|是否/.test(q) || term.length > 10;
@@ -382,6 +383,16 @@
       '<div class="card"><h2>没有找到</h2>' +
       '<p class="none">全书没有「' + esc(term) + '」这个字符串。</p>' +
       '<p class="hint">可能是写法不同（例如「虚心」与「灵里贫穷」），可以换个说法，或直接在「读」里翻到那一节。</p></div>';
+  }
+
+  function renderFuzzy(term, feats, hits) {
+    var html = '<div class="card"><h2>没有完全匹配</h2>' +
+      '<p class="none">全书没有「' + esc(term) + '」这个字符串。</p>' +
+      '<p class="hint">下面这些经文含「' + feats.map(esc).join("」「") + '」，可能是你要找的：</p></div>';
+    html += '<div class="card"><h2>相关经文 <span class="src">和合本</span></h2>';
+    hits.forEach(function (h) { html += hitHTML(h, feats); });
+    html += "</div>";
+    askResult.innerHTML = html;
   }
 
   function lexCardsHTML(keys) {
@@ -801,8 +812,24 @@
     renderLoading("检索「" + term + "」…");
     ensureSearch().then(function () {
       var hits = searchTerm(term);
-      if (!hits.length) { renderNoHit(term); return; }
-      renderTermResult(term, hits);
+      if (hits.length) { renderTermResult(term, hits); return; }
+
+      // 没有完全匹配：拆成更短的片段再找，别直接报「查不到」
+      var feats = [], seenF = {};
+      buildChunks(term).forEach(function (c) {
+        if (!seenF[c] && searchTerm(c).length) { seenF[c] = 1; feats.push(c); }
+      });
+      if (feats.length) {
+        var alt = [], seenH = {};
+        feats.slice(0, 2).forEach(function (c) {
+          searchTerm(c).slice(0, 12).forEach(function (h) {
+            if (!seenH[h.idx]) { seenH[h.idx] = 1; alt.push(h); }
+          });
+        });
+        renderFuzzy(term, feats, alt);
+        return;
+      }
+      renderNoHit(term);
     }).catch(function () { renderLoading("索引载入失败"); });
   }
 
@@ -916,6 +943,21 @@
     return html || '<div class="none">词条库中未找到对应条目</div>';
   }
 
+  function paras(t) {
+    return String(t || "").split("\n").map(function (s) { return s.trim(); }).filter(Boolean);
+  }
+
+  function partHTML(part) {
+    var ps = paras(part.t);
+    if (!ps.length) return "";
+    var body = ps.map(function (p) { return "<p>" + esc(p) + "</p>"; }).join("");
+    if (!part.l) {
+      return '<div class="part"><div class="scripture verse-quote">' + body + "</div></div>";
+    }
+    return '<div class="part"><span class="plabel">' + esc(part.l) + "</span>" +
+      '<div class="ptext">' + body + "</div></div>";
+  }
+
   function noteCard(ch) {
     var note = ch.note && ch.note[String(state.verse)];
     if (!note || !note.length) {
@@ -923,14 +965,7 @@
         '<div class="none">本模块没有这一节的逐节注解（本章其余资料见下方）</div></div>';
     }
     var html = '<div class="card"><h2>逐节注解 <span class="src">基督徒文摘解经系列</span></h2>';
-    note.forEach(function (part) {
-      if (!part.l) {
-        html += '<div class="part"><div class="scripture" style="font-size:16px;color:var(--ink-2)">' + esc(part.t) + "</div></div>";
-      } else {
-        html += '<div class="part"><span class="plabel">' + esc(part.l) + "</span>" +
-          '<span class="ptext">' + esc(part.t) + "</span></div>";
-      }
-    });
+    note.forEach(function (part) { html += partHTML(part); });
     return html + "</div>";
   }
 
@@ -1001,6 +1036,21 @@
     }
   }
 
+  var lastSaveAt = 0;
+  function saveLast() {
+    try {
+      localStorage.setItem("jd_last", JSON.stringify({
+        view: state.view, b: state.book, c: state.chap, v: state.verse,
+        q: qInput ? qInput.value : "",
+        y: window.scrollY || window.pageYOffset || 0,
+        t: Date.now()
+      }));
+    } catch (e) {}
+  }
+  function restoreLast() {
+    try { return JSON.parse(localStorage.getItem("jd_last") || "null"); } catch (e) { return null; }
+  }
+
   function syncHash() {
     var h = "#" + state.book + "/" + state.chap + "/" + state.verse;
     if (location.hash !== h) history.replaceState(null, "", h);
@@ -1014,7 +1064,7 @@
     return { b: b, c: c, v: v || 1 };
   }
 
-  function goTo(book, chap, verse) {
+  function goTo(book, chap, verse, scrollY) {
     var meta = bookMeta(book); if (!meta) return;
     if (chap < 1) chap = 1;
     if (chap > meta.c) chap = meta.c;
@@ -1031,6 +1081,8 @@
       renderChapter(ch);
       renderPanel(ch);
       syncHash();
+      saveLast();
+      if (scrollY) setTimeout(function () { window.scrollTo(0, scrollY); }, 80);
       // 预取下一章
       setTimeout(function () {
         if (chap < meta.c && state.book + ":" + state.chap === wanted) loadChapter(book, chap + 1).catch(function () {});
@@ -1125,6 +1177,7 @@
     });
 
     var qh = (location.hash || "").replace(/^#/, "");
+    var last = restoreLast();
     if (qh.indexOf("q=") === 0) {
       var seed = decodeURIComponent(qh.slice(2));
       qInput.value = seed;
@@ -1132,14 +1185,32 @@
     } else if (parseHash()) {
       var h = parseHash();
       setView("read");
-      goTo(h.b, h.c, h.v);
+      goTo(h.b, h.c, h.v, last ? last.y : 0);
+    } else if (last) {
+      // 回到上次的位置
+      if (last.view === "read" && last.b && last.c) {
+        setView("read");
+        goTo(last.b, last.c, last.v || 1, last.y || 0);
+      } else {
+        setView("ask");
+        if (last.q) qInput.value = last.q;
+        if (last.y) setTimeout(function () { window.scrollTo(0, last.y); }, 60);
+      }
     }
+
+    window.addEventListener("pagehide", saveLast);
+    document.addEventListener("visibilitychange", function () { if (document.hidden) saveLast(); });
+    window.addEventListener("scroll", function () {
+      var now = Date.now();
+      if (now - lastSaveAt > 800) { lastSaveAt = now; saveLast(); }
+    }, { passive: true });
 
     // 首屏空闲时预热索引，让第一次搜索不再空等
     setTimeout(warmup, 800);
   }
 
   function boot() {
+    console.log("精读·查经 build 2026-11-10 v3");
     loadScript("data/" + DATA_V + "/books.js").then(function () {
       BOOKS = window.__BOOKS || [];
       init();
