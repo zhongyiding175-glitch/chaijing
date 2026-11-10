@@ -24,6 +24,7 @@
   <nav class="tabs">
     <button type="button" id="tabAsk" class="tab on">问</button>
     <button type="button" id="tabRead" class="tab">读</button>
+    <button type="button" id="tabFav" class="tab">藏</button>
   </nav>
   <div class="controls" id="readControls" hidden>
     <select id="bookSel" aria-label="书卷"></select>
@@ -33,7 +34,19 @@
       <button id="nextBtn" type="button" aria-label="下一章">›</button>
     </div>
   </div>
+  <button type="button" id="fontBtn" class="iconbtn" aria-label="字号">Aa</button>
 </header>
+
+<div class="fontpop" id="fontPop" hidden>
+  <div class="frow">
+    <span class="flabel">字号</span>
+    <button type="button" id="fontMinus" class="rbtn">−</button>
+    <input type="range" id="fontRange" min="15" max="24" step="1" value="17">
+    <button type="button" id="fontPlus" class="rbtn">+</button>
+    <span id="fontVal" class="fval">17</span>
+  </div>
+  <div class="fhint">只影响经文与注解</div>
+</div>
 
 <div class="installbar" id="installBar" hidden>
   <span id="installText"></span>
@@ -70,6 +83,13 @@
   <section class="readview" id="readView" hidden>
     <div class="reader" id="reader"></div>
     <aside class="panel" id="panel"></aside>
+  </section>
+
+  <section class="favview" id="favView" hidden>
+    <div class="card">
+      <h2>我的收藏 <span class="src" id="favCount"></span></h2>
+      <div id="favList"></div>
+    </div>
   </section>
 
 </main>

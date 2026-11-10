@@ -66,7 +66,7 @@ select{
   .topbar{padding:8px 10px;gap:8px}
   .brand{display:none}
   .controls{gap:6px}
-  #bookSel{max-width:none}
+  #bookSel{max-width:none;width:0}
   #chapSel{width:80px}
   .navbtns button{width:32px;height:32px}
 }
@@ -342,3 +342,94 @@ details.lexd[open] summary::before{content:"▾ "}
 }
 .installbar #installClose{background:transparent;color:#8b8375;padding:2px 6px;font-size:14px}
 .buildfoot{text-align:center;font-size:11px;color:#b7ad9c;padding:0 0 18px;letter-spacing:.04em}
+
+/* ================= v3：字号 / 收藏 / 提要 ================= */
+:root{ --fs:17px; }
+
+.verse{font-size:calc(var(--fs) * 1.03)}
+.scripture{font-size:calc(var(--fs) * 1.06)}
+.verse-quote p{font-size:calc(var(--fs) * 0.94)}
+.ptext{font-size:calc(var(--fs) * 0.88)}
+.strongline{font-size:calc(var(--fs) * 1.0)}
+.hittxt{font-size:calc(var(--fs) * 0.97)}
+.qbody{font-size:calc(var(--fs) * 0.91)}
+
+.iconbtn{
+  font:inherit;font-size:13px;letter-spacing:.02em;
+  width:34px;height:32px;flex:none;
+  background:var(--paper-2);border:1px solid var(--line);border-radius:9px;
+  color:var(--ink-2);cursor:pointer;
+}
+.iconbtn:active{background:var(--hl)}
+
+.fontpop{
+  position:fixed;top:56px;right:12px;z-index:60;
+  background:var(--paper-2);border:1px solid var(--line);border-radius:12px;
+  box-shadow:0 10px 30px rgba(76,58,32,.18);
+  padding:12px 14px;min-width:260px;
+}
+.fontpop[hidden]{display:none}
+.frow{display:flex;align-items:center;gap:8px}
+.flabel{font-size:12.5px;color:var(--ink-3);flex:none}
+.fval{font-size:12.5px;color:var(--accent);width:22px;text-align:right}
+.rbtn{
+  font:inherit;font-size:16px;line-height:1;width:26px;height:26px;
+  border:1px solid var(--line);background:var(--paper);border-radius:7px;
+  color:var(--ink-2);cursor:pointer;flex:none;
+}
+#fontRange{flex:1;min-width:80px;accent-color:var(--accent)}
+.fhint{font-size:11.5px;color:var(--ink-3);margin-top:8px}
+
+/* 收藏按钮 */
+.acts{margin-top:10px;display:flex;gap:8px}
+.favbtn{
+  font:inherit;font-size:12.5px;color:var(--ink-2);
+  background:var(--tag);border:0;border-radius:7px;padding:4px 10px;cursor:pointer;
+}
+.favbtn.on{background:var(--hl);color:var(--accent)}
+.favbtn.mini{padding:1px 7px;font-size:12px}
+.plabelrow{display:flex;align-items:center;gap:8px}
+.plabelrow .plabel{margin:0}
+.star{color:var(--accent-2);font-size:11px;margin-left:4px;vertical-align:super}
+.verse.starred{box-shadow:inset 2px 0 0 var(--accent-2)}
+
+.introlink{
+  float:right;font:inherit;font-size:12px;font-weight:400;letter-spacing:0;
+  color:var(--accent);background:var(--tag);border:0;border-radius:7px;
+  padding:3px 9px;cursor:pointer;margin-top:4px;
+}
+
+/* 卷提要 */
+.bookintro{font-size:calc(var(--fs) * 0.9);line-height:1.95;color:var(--ink-2)}
+.bookintro p{margin:.5em 0}
+.bookintro p:first-child{font-weight:700;color:var(--ink);font-size:calc(var(--fs) * 1.0)}
+.openbook{
+  font:inherit;font-size:12.5px;color:#fff;background:var(--accent);
+  border:0;border-radius:7px;padding:3px 10px;margin-left:8px;cursor:pointer;
+}
+
+/* 收藏页 */
+.favview{max-width:820px;margin:0 auto;padding:24px 16px 60px}
+.favitem{padding:12px 0;border-top:1px dashed var(--line)}
+.favitem:first-child{border-top:none;padding-top:2px}
+.fhead{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:4px}
+.fref{font-size:12.5px;color:var(--accent)}
+.fbtns button{
+  font:inherit;font-size:12px;color:var(--ink-3);background:transparent;border:0;
+  cursor:pointer;padding:2px 6px;
+}
+.fbtns button:hover{color:var(--accent)}
+.ftext{
+  font-family:"Songti SC","SimSun","Noto Serif CJK SC",serif;
+  font-size:calc(var(--fs) * 0.94);line-height:1.95;color:var(--ink-2);
+}
+@media(max-width:560px){
+  .topbar{flex-wrap:wrap;padding:7px 10px;gap:6px}
+  .tab{padding:4px 10px;font-size:13.5px}
+  .tabs{gap:2px;padding:2px}
+  .iconbtn{width:28px;height:28px;font-size:12px;margin-left:auto}
+  .navbtns{display:none}
+  .controls{order:3;flex:1 0 100%;gap:6px}
+  #bookSel{width:0;flex:1;min-width:0;padding-right:22px}
+  #chapSel{width:88px;padding-right:22px}
+}

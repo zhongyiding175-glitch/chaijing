@@ -10,10 +10,12 @@
   var chapPending = {};              // "b:c" -> {promise, resolve, reject}
   var aliasMap = null;
 
+  var FAV_KEY = "jd_fav", FS_KEY = "jd_fs";
+  var favs = [];
   var state = {
     view: "ask",
     book: 40, chap: 5, verse: 1,
-    lex: null, conc: null, search: null,
+    lex: null, conc: null, search: null, intros: null,
     loading: {}
   };
 
@@ -25,7 +27,52 @@
   };
 
   var $ = function (id) { return document.getElementById(id); };
-  var askView, readView, readerEl, panelEl, askResult, qInput, bookSel, chapSel;
+
+  /* ---------------- 收藏 ---------------- */
+  function loadFavs() {
+    try { favs = JSON.parse(localStorage.getItem(FAV_KEY) || "[]") || []; } catch (e) { favs = []; }
+    return favs;
+  }
+  function saveFavs() {
+    try { localStorage.setItem(FAV_KEY, JSON.stringify(favs)); } catch (e) {}
+    var t = $("tabFav");
+    if (t) t.textContent = favs.length ? "藏 " + favs.length : "藏";
+  }
+  function favKey(o) { return o.type + ":" + o.b + ":" + o.c + ":" + o.v + ":" + (o.label || ""); }
+  function isFav(o) {
+    var k = favKey(o);
+    for (var i = 0; i < favs.length; i++) if (favKey(favs[i]) === k) return true;
+    return false;
+  }
+  function toggleFav(o) {
+    var k = favKey(o), idx = -1;
+    for (var i = 0; i < favs.length; i++) if (favKey(favs[i]) === k) { idx = i; break; }
+    if (idx >= 0) favs.splice(idx, 1);
+    else favs.unshift(o);
+    saveFavs();
+    return idx < 0;
+  }
+  function verseFavMap(b, c) {
+    var m = {};
+    favs.forEach(function (f) { if (f.type === "verse" && f.b === b && f.c === c) m[f.v] = 1; });
+    return m;
+  }
+
+  /* ---------------- 字号 ---------------- */
+  function applyFont(px) {
+    px = Math.min(24, Math.max(15, parseInt(px, 10) || 17));
+    document.documentElement.style.setProperty("--fs", px + "px");
+    try { localStorage.setItem(FS_KEY, String(px)); } catch (e) {}
+    var r = $("fontRange"), v = $("fontVal");
+    if (r) r.value = px;
+    if (v) v.textContent = px;
+  }
+  function initFont() {
+    var px = 17;
+    try { px = parseInt(localStorage.getItem(FS_KEY) || "17", 10) || 17; } catch (e) {}
+    applyFont(px);
+  }
+  var askView, readView, favView, readerEl, panelEl, askResult, qInput, bookSel, chapSel;
 
   /* ---------------- 基础 ---------------- */
   function esc(s) {
@@ -170,6 +217,19 @@
     }
     var m2 = q.match(/^(\d{1,3})\s*[:：]\s*(\d{1,2})\s*:\s*(\d{1,3})/);
     if (m2) return { type: "ref", book: +m2[1], chap: +m2[2], verse: +m2[3] };
+
+    // 书卷概述：「罗马书讲的是什么」「介绍一下罗马书」「罗马书」
+    var mIntro = q.match(/^(?:请|帮我)?(?:介绍一下|介绍|说说|讲讲|概述一下|概括一下)?\s*([\u4e00-\u9fa5]{1,8})$/);
+    var mIntro2 = q.match(/^([\u4e00-\u9fa5]{1,6})\s*(?:讲的?是什么|讲什么|讲的什么|讲了什么|说什么|说的是什么|主旨|主题|概要|概览|大意|简介|主要内容|内容|综览|讲些啥|重点)/);
+    var introBook = null, introRest = "";
+    if (mIntro2) {
+      introBook = resolveBook(mIntro2[1]);
+      introRest = mIntro2[2] || "";
+    } else if (mIntro) {
+      introBook = resolveBook(mIntro[1]);
+      introRest = "";
+    }
+    if (introBook) return { type: "book", book: introBook };
 
     var qm = q.match(/[「『“"]([^」』”"]{1,24})[」』”"]/);
     var term = qm ? qm[1] : null;
@@ -393,6 +453,37 @@
     hits.forEach(function (h) { html += hitHTML(h, feats); });
     html += "</div>";
     askResult.innerHTML = html;
+  }
+
+  function ensureIntros() {
+    if (state.intros) return Promise.resolve(state.intros);
+    if (state.loading.intros) return state.loading.intros;
+    var prev = window.__INTROS; window.__INTROS = null;
+    state.loading.intros = loadScript("data/" + DATA_V + "/intros.js").then(function () {
+      state.intros = window.__INTROS || {}; window.__INTROS = prev; return state.intros;
+    });
+    return state.loading.intros;
+  }
+
+  function renderBookOverview(b) {
+    var meta = bookMeta(b);
+    renderLoading("载入《" + meta.name + "》提要…");
+    ensureIntros().then(function (I) {
+      var ps = I[String(b)];
+      var html = '<div class="card"><h2>卷提要 <span class="src">基督徒文摘解经系列</span></h2>';
+      if (!ps || !ps.length) {
+        html += '<div class="none">本卷没有提要数据</div>';
+      } else {
+        html += '<div class="bookintro">' + ps.map(function (p) {
+          return "<p>" + esc(p) + "</p>";
+        }).join("") + "</div>";
+      }
+      html += '<p class="hint">以上为原文摘录。' +
+        '<button type="button" class="openbook" data-b="' + b + '">读第 1 章 ›</button></p></div>';
+      askResult.innerHTML = html;
+    }).catch(function () {
+      askResult.innerHTML = '<div class="card"><h2>载入失败</h2><p class="none">卷提要文件没加载到</p></div>';
+    });
   }
 
   function lexCardsHTML(keys) {
@@ -776,6 +867,8 @@
     askResult.addEventListener("click", function (e) {
       var chip = e.target.closest(".chip[data-q]");
       if (chip) { qInput.value = chip.getAttribute("data-q"); runQuery(qInput.value); return; }
+      var ob = e.target.closest(".openbook");
+      if (ob) { setView("read"); goTo(+ob.getAttribute("data-b"), 1, 1); return; }
       var open = e.target.closest(".openbtn");
       if (open) {
         setView("read");
@@ -792,6 +885,12 @@
     if (parsed.type === "ref") {
       setView("read");
       goTo(parsed.book, parsed.chap, parsed.verse);
+      return;
+    }
+
+    if (parsed.type === "book") {
+      setView("ask");
+      renderBookOverview(parsed.book);
       return;
     }
 
@@ -834,13 +933,37 @@
   }
 
   /* ---------------- 视图 ---------------- */
+  function renderFavList() {
+    var host = $("favList"), cnt = $("favCount");
+    if (cnt) cnt.textContent = favs.length + " 条";
+    if (!host) return;
+    if (!favs.length) {
+      host.innerHTML = '<div class="none">还没有收藏。<br>读经时点经文下面的「☆ 收藏这句」，或注解标题旁的 ☆ 即可。</div>';
+      return;
+    }
+    var html = "";
+    favs.forEach(function (f, i) {
+      var m = bookMeta(f.b);
+      var ref = (m ? m.name : "") + " " + f.c + ":" + f.v + (f.label ? " · " + f.label : "");
+      html += '<div class="favitem"><div class="fhead"><span class="fref">' + esc(ref) + "</span>" +
+        '<span class="fbtns"><button type="button" class="favgo" data-b="' + f.b + '" data-c="' + f.c +
+        '" data-v="' + f.v + '">跳转</button>' +
+        '<button type="button" class="favdel" data-i="' + i + '">删除</button></span></div>' +
+        '<div class="ftext">' + esc(f.text || "").replace(/\\n/g, "</p><p>") + "</div></div>";
+    });
+    host.innerHTML = html;
+  }
+
   function setView(v) {
     state.view = v;
     $("tabAsk").classList.toggle("on", v === "ask");
     $("tabRead").classList.toggle("on", v === "read");
+    $("tabFav").classList.toggle("on", v === "fav");
     askView.hidden = v !== "ask";
     readView.hidden = v !== "read";
+    favView.hidden = v !== "fav";
     $("readControls").hidden = v !== "read";
+    if (v === "fav") renderFavList();
   }
 
   /* ================= 读 ================= */
@@ -866,14 +989,18 @@
 
   function renderChapter(ch) {
     var meta = bookMeta(state.book);
-    var html = '<h1 class="chaptitle">' + esc(meta.name) + " 第 " + state.chap + " 章</h1>";
+    var favMap = verseFavMap(state.book, state.chap);
+    var html = '<h1 class="chaptitle">' + esc(meta.name) + " 第 " + state.chap + " 章" +
+      '<button type="button" class="introlink" data-b="' + state.book + '">本卷提要</button></h1>';
     if (ch.overview && ch.overview.length) {
       html += '<details class="overview"><summary>本章纲要（基督徒文摘）</summary><div class="body">';
       ch.overview.forEach(function (p) { html += "<p>" + esc(p) + "</p>"; });
       html += "</div></details>";
     }
     ch.v.forEach(function (row) {
-      html += '<p class="verse" data-v="' + row[0] + '"><span class="num">' + row[0] + "</span>" + esc(row[1]) + "</p>";
+      html += '<p class="verse' + (favMap[row[0]] ? " starred" : "") + '" data-v="' + row[0] + '">' +
+        '<span class="num">' + row[0] + "</span>" + esc(row[1]) +
+        (favMap[row[0]] ? '<span class="star">★</span>' : "") + "</p>";
     });
     readerEl.innerHTML = html;
 
@@ -947,14 +1074,21 @@
     return String(t || "").split("\n").map(function (s) { return s.trim(); }).filter(Boolean);
   }
 
-  function partHTML(part) {
+  function partHTML(part, verse) {
     var ps = paras(part.t);
     if (!ps.length) return "";
     var body = ps.map(function (p) { return "<p>" + esc(p) + "</p>"; }).join("");
+    var btn = "";
+    if (verse && part.l) {
+      var on = isFav({ type: "note", b: state.book, c: state.chap, v: verse, label: part.l, text: "" });
+      btn = '<button type="button" class="favbtn mini' + (on ? " on" : "") +
+        '" data-kind="note" data-v="' + verse + '" data-label="' + esc(part.l) + '">' +
+        (on ? "★" : "☆") + "</button>";
+    }
     if (!part.l) {
       return '<div class="part"><div class="scripture verse-quote">' + body + "</div></div>";
     }
-    return '<div class="part"><span class="plabel">' + esc(part.l) + "</span>" +
+    return '<div class="part"><div class="plabelrow"><span class="plabel">' + esc(part.l) + "</span>" + btn + "</div>" +
       '<div class="ptext">' + body + "</div></div>";
   }
 
@@ -965,7 +1099,7 @@
         '<div class="none">本模块没有这一节的逐节注解（本章其余资料见下方）</div></div>';
     }
     var html = '<div class="card"><h2>逐节注解 <span class="src">基督徒文摘解经系列</span></h2>';
-    note.forEach(function (part) { html += partHTML(part); });
+    note.forEach(function (part) { html += partHTML(part, state.verse); });
     return html + "</div>";
   }
 
@@ -999,7 +1133,12 @@
     var keys = collectKeys(raw);
 
     var html = '<p class="ref">' + esc(ref) + "</p>";
-    html += '<div class="card"><h2>经文 <span class="src">和合本</span></h2><div class="scripture">' + esc(row[1]) + "</div></div>";
+    var fv = { type: "verse", b: state.book, c: state.chap, v: state.verse, label: "", text: row[1], ref: ref };
+    var on = isFav(fv);
+    html += '<div class="card"><h2>经文 <span class="src">和合本</span></h2>' +
+      '<div class="scripture">' + esc(row[1]) + "</div>" +
+      '<div class="acts"><button type="button" class="favbtn' + (on ? " on" : "") +
+      '" data-kind="verse">' + (on ? "★ 已收藏" : "☆ 收藏这句") + "</button></div></div>";
     html += noteCard(ch);
     if (raw) {
       html += '<div class="card"><h2>原文逐词 <span class="src">信望爱和合本 · Strong 编码</span></h2>' +
@@ -1134,17 +1273,69 @@
 
   /* ---------------- 初始化 ---------------- */
   function init() {
-    askView = $("askView"); readView = $("readView");
+    askView = $("askView"); readView = $("readView"); favView = $("favView");
     readerEl = $("reader"); panelEl = $("panel");
     askResult = $("askResult"); qInput = $("q");
     bookSel = $("bookSel"); chapSel = $("chapSel");
 
     setupPWA();
     initResultDelegation();
+    loadFavs(); saveFavs();
+    initFont();
     buildBookSelect();
     setView("ask");
 
     $("tabAsk").addEventListener("click", function () { setView("ask"); });
+    $("tabFav").addEventListener("click", function () { setView("fav"); });
+
+    // 字号弹层
+    $("fontBtn").addEventListener("click", function (e) {
+      e.stopPropagation();
+      var pop = $("fontPop");
+      pop.hidden = !pop.hidden;
+    });
+    $("fontPop").addEventListener("click", function (e) { e.stopPropagation(); });
+    document.addEventListener("click", function () { $("fontPop").hidden = true; });
+    $("fontRange").addEventListener("input", function () { applyFont(this.value); });
+    $("fontMinus").addEventListener("click", function () { applyFont(parseInt($("fontRange").value, 10) - 1); });
+    $("fontPlus").addEventListener("click", function () { applyFont(parseInt($("fontRange").value, 10) + 1); });
+
+    // 收藏列表操作
+    $("favList").addEventListener("click", function (e) {
+      var go = e.target.closest(".favgo");
+      if (go) { setView("read"); goTo(+go.getAttribute("data-b"), +go.getAttribute("data-c"), +go.getAttribute("data-v")); return; }
+      var del = e.target.closest(".favdel");
+      if (del) { favs.splice(+del.getAttribute("data-i"), 1); saveFavs(); renderFavList(); }
+    });
+
+    // 收藏按钮（只注册一次）
+    panelEl.addEventListener("click", function (e) {
+      var b = e.target.closest(".favbtn");
+      if (!b) return;
+      var kind = b.getAttribute("data-kind");
+      var ch = chapterOf(state.book, state.chap);
+      if (!ch) return;
+      var row = null;
+      for (var i = 0; i < ch.v.length; i++) if (ch.v[i][0] === state.verse) row = ch.v[i];
+      if (!row) return;
+      var o = { type: kind, b: state.book, c: state.chap, v: state.verse,
+                label: b.getAttribute("data-label") || "", text: "" };
+      if (kind === "verse") {
+        o.text = row[1];
+        o.ref = bookMeta(state.book).name + " " + state.chap + ":" + state.verse;
+      } else {
+        var note = ch.note && ch.note[String(state.verse)];
+        if (note) note.forEach(function (p) { if (p.l === o.label) o.text = paras(p.t).join("\n"); });
+      }
+      toggleFav(o);
+      renderPanel(ch);
+    });
+
+    // 本卷提要
+    readerEl.addEventListener("click", function (e) {
+      var b = e.target.closest(".introlink");
+      if (b) { setView("ask"); renderBookOverview(+b.getAttribute("data-b")); }
+    });
     $("tabRead").addEventListener("click", function () {
       setView("read");
       if (!readerEl.querySelector(".verse")) {

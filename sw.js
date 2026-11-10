@@ -4,7 +4,7 @@
  *   - 数据分卷（data/b*.js、lex、conc、search）：先用缓存，没有再下载并缓存
  * 改了数据想强制更新时，改 VERSION。
  */
-const VERSION = "jd-v3";
+const VERSION = "jd-v4";
 
 const CORE = [
   "./",
